@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# orca launcher — opens the Docker TUI in the current terminal.
+set -euo pipefail
+
+if ! command -v java >/dev/null 2>&1; then
+    echo "orca needs Java 21 or newer." >&2
+    echo "Install it with:  sudo apt install openjdk-21-jre" >&2
+    exit 1
+fi
+
+if [ -n "${ORCA_JAR:-}" ]; then
+    jar="$ORCA_JAR"
+else
+    # Installed layout first, then a jar built straight from the repository.
+    root="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+    jar="$root/share/orca/orca.jar"
+    if [ ! -f "$jar" ]; then
+        jar="$(ls -t "$root"/target/orca-*.jar 2>/dev/null | grep -v original | head -1 || true)"
+    fi
+fi
+
+if [ ! -f "${jar:-}" ]; then
+    echo "orca.jar not found. Run ./install.sh in the project directory." >&2
+    exit 1
+fi
+
+if [ ! -t 0 ] || [ ! -t 1 ]; then
+    echo "orca is a terminal UI — run it directly in a terminal, without pipes." >&2
+    exit 1
+fi
+
+exec java -jar "$jar" "$@"
