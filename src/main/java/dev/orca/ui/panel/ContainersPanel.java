@@ -126,10 +126,12 @@ public class ContainersPanel extends TablePanel<ContainerView> {
                 );
                 status.setStatus("Created " + id.substring(0, Math.min(12, id.length())));
                 refresh();
+                focusTable();
             } catch (Exception e) {
                 showError("Create container failed", e);
             }
         });
+        focusTable();
     }
 
     private void showLogs() {
@@ -145,6 +147,7 @@ public class ContainersPanel extends TablePanel<ContainerView> {
         } catch (Exception e) {
             showError("Logs failed", e);
         }
+        focusTable();
     }
 
     private void deleteSelected() {
@@ -155,6 +158,7 @@ public class ContainersPanel extends TablePanel<ContainerView> {
         }
         if (!ConfirmDialog.ask(gui, "Delete container", "Force remove container '" + label(container) + "'?")) {
             status.setStatus("Delete cancelled");
+            focusTable();
             return;
         }
         try {
@@ -164,6 +168,7 @@ public class ContainersPanel extends TablePanel<ContainerView> {
         } catch (Exception e) {
             showError("Delete failed", e);
         }
+        focusTable();
     }
 
     private void runOnSelected(String pastTense, ContainerAction action) {
@@ -172,13 +177,21 @@ public class ContainersPanel extends TablePanel<ContainerView> {
             requireSelection("use this action");
             return;
         }
+        String name = label(container);
+        boolean wasRunning = container.running();
         try {
             action.run(container.id());
-            status.setStatus(pastTense + " " + label(container));
+            String note = switch (pastTense) {
+                case "Stopped" -> wasRunning ? "Stopped " + name : "Already stopped — " + name;
+                case "Started" -> wasRunning ? "Already running — " + name : "Started " + name;
+                default -> pastTense + " " + name;
+            };
+            status.setStatus(note);
             refresh();
         } catch (Exception e) {
-            showError("Action failed", e);
+            showError(pastTense + " failed", e);
         }
+        focusTable();
     }
 
     private static String label(ContainerView container) {

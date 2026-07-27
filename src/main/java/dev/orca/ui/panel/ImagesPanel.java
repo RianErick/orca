@@ -113,7 +113,9 @@ public class ImagesPanel extends TablePanel<ImageView> {
             } catch (Exception e) {
                 showError("Pull failed", e);
             }
+            focusTable();
         });
+        focusTable();
     }
 
     private void deleteSelected() {
@@ -124,6 +126,7 @@ public class ImagesPanel extends TablePanel<ImageView> {
         }
         if (!ConfirmDialog.ask(gui, "Delete image", "Force remove image '" + image.repositoryTag() + "'?")) {
             status.setStatus("Delete cancelled");
+            focusTable();
             return;
         }
         try {
@@ -133,5 +136,6 @@ public class ImagesPanel extends TablePanel<ImageView> {
         } catch (Exception e) {
             showError("Delete failed", e);
         }
+        focusTable();
     }
 }

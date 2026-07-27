@@ -36,17 +36,23 @@ public abstract class TablePanel<T> extends Panel {
 
     private final SelectionTable<String> table;
     private final Columns columns;
+    private final String[] headers;
     private final Label heading;
     private final List<T> items = new ArrayList<>();
 
     private int[] widths;
     private boolean loadFailed;
+    /** Only the active tab may push selection text into the shared status bar. */
+    private boolean active;
+    /** Stable selection key — survives model rebuilds that temporarily zero {@code selectedRow}. */
+    private String selectedIdentity;
 
     protected TablePanel(WindowBasedTextGUI gui, StatusSink status, Columns columns, String... headers) {
         super(new LinearLayout(Direction.VERTICAL).setSpacing(0));
         this.gui = gui;
         this.status = status;
         this.columns = columns;
+        this.headers = headers.clone();
         this.widths = columns.widths(80);
 
         heading = new Label("");
@@ -94,6 +100,18 @@ public abstract class TablePanel<T> extends Panel {
         return table;
     }
 
+    public void setActive(boolean active) {
+        this.active = active;
+        if (active) {
+            table.forceSelectionNotification();
+            focusTable();
+        }
+    }
+
+    public boolean isActive() {
+        return active;
+    }
+
     public int count() {
         return items.size();
     }
@@ -103,6 +121,13 @@ public abstract class TablePanel<T> extends Panel {
     }
 
     protected T selected() {
+        if (selectedIdentity != null) {
+            for (T item : items) {
+                if (selectedIdentity.equals(identity(item))) {
+                    return item;
+                }
+            }
+        }
         int row = table.getSelectedRow();
         if (row < 0 || row >= items.size()) {
             return null;
@@ -113,33 +138,44 @@ public abstract class TablePanel<T> extends Panel {
     public void relayout(int width, int visibleRows) {
         widths = columns.widths(Math.max(20, width - SCROLLBAR - (columns.count() - 1)));
         table.setVisibleRows(Math.max(3, visibleRows));
-        render();
+        // Re-render keeps the remembered identity; never leave the highlight stuck on row 0.
+        render(selectedIdentity);
     }
 
-    public void refresh() {
-        String previous = selectedIdentity();
+    /**
+     * @param announce when {@code true}, writes a status line (active tab only should announce)
+     */
+    public void refresh(boolean announce) {
+        String previous = selectedIdentity != null ? selectedIdentity : selectedIdentityFromRow();
         try {
             List<T> loaded = load();
             items.clear();
             items.addAll(loaded);
             loadFailed = false;
-            render();
-            restoreSelection(previous);
-            status.setStatus(items.size() + " " + noun() + " loaded");
+            render(previous);
+            if (announce && active) {
+                status.setStatus(items.size() + " " + noun() + " loaded");
+            }
         } catch (Exception e) {
             loadFailed = true;
             items.clear();
-            render();
-            status.setStatus("Docker error: " + DockerService.friendlyMessage(e));
+            render(null);
+            if (announce && active) {
+                status.setStatus("Docker error: " + DockerService.friendlyMessage(e));
+            }
         }
     }
 
-    /** Repaints the current data without querying Docker again. */
-    protected void render() {
-        TableModel<String> model = table.getTableModel();
-        while (model.getRowCount() > 0) {
-            model.removeRow(0);
-        }
+    public void refresh() {
+        refresh(true);
+    }
+
+    /**
+     * Rebuilds the table model in one shot. Avoids Lanterna's per-row listener that silently
+     * walks {@code selectedRow} back to 0 while rows are cleared.
+     */
+    private void render(String identityToRestore) {
+        TableModel<String> model = new TableModel<>(headers);
         for (T item : items) {
             String[] raw = cells(item);
             String[] padded = new String[raw.length];
@@ -148,6 +184,10 @@ public abstract class TablePanel<T> extends Panel {
             }
             model.addRow(padded);
         }
+        table.setTableModel(model);
+        // Model swap may leave selectedRow stale; realign the tracker before restoring.
+        table.adoptModelSelection();
+        restoreSelection(identityToRestore);
         updateHeading();
     }
 
@@ -167,23 +207,34 @@ public abstract class TablePanel<T> extends Panel {
         heading.setForegroundColor(Palette.DIM);
     }
 
-    private String selectedIdentity() {
-        T item = selected();
-        return item == null ? null : identity(item);
+    private String selectedIdentityFromRow() {
+        int row = table.getSelectedRow();
+        if (row < 0 || row >= items.size()) {
+            return null;
+        }
+        return identity(items.get(row));
     }
 
     private void restoreSelection(String identity) {
+        if (items.isEmpty()) {
+            selectedIdentity = null;
+            table.forceSelectionNotification();
+            return;
+        }
         if (identity != null) {
             for (int i = 0; i < items.size(); i++) {
                 if (identity.equals(identity(items.get(i)))) {
+                    selectedIdentity = identity;
                     table.setSelectedRow(i);
-                    onSelectionChanged();
+                    table.forceSelectionNotification();
                     return;
                 }
             }
         }
-        table.setSelectedRow(Math.min(table.getSelectedRow(), Math.max(0, items.size() - 1)));
-        onSelectionChanged();
+        int row = Math.min(Math.max(0, table.getSelectedRow()), items.size() - 1);
+        selectedIdentity = identity(items.get(row));
+        table.setSelectedRow(row);
+        table.forceSelectionNotification();
     }
 
     private TextColor cellColor(int row, int column) {
@@ -194,17 +245,37 @@ public abstract class TablePanel<T> extends Panel {
     }
 
     private void onSelectionChanged() {
-        status.setSelection(describeSelection());
+        int row = table.getSelectedRow();
+        if (row >= 0 && row < items.size()) {
+            selectedIdentity = identity(items.get(row));
+        } else {
+            selectedIdentity = null;
+        }
+        if (active) {
+            status.setSelection(describeSelection());
+            status.noteUserInteraction();
+        }
+    }
+
+    /** Returns keyboard/mouse focus to the table after toolbar actions. */
+    protected void focusTable() {
+        try {
+            gui.getGUIThread().invokeLater(table::takeFocus);
+        } catch (Exception ignored) {
+            table.takeFocus();
+        }
     }
 
     protected void requireSelection(String action) {
         status.setStatus("Select a row first, then " + action);
+        focusTable();
     }
 
     protected void showError(String title, Exception e) {
         String message = DockerService.friendlyMessage(e);
         status.setStatus("Error: " + message);
         MessageDialog.showMessageDialog(gui, title, message, MessageDialogButton.OK);
+        focusTable();
     }
 
     protected static String bullet(boolean on) {

@@ -114,7 +114,9 @@ public class NetworksPanel extends TablePanel<NetworkView> {
             } catch (Exception e) {
                 showError("Create network failed", e);
             }
+            focusTable();
         });
+        focusTable();
     }
 
     private void deleteSelected() {
@@ -131,10 +133,12 @@ public class NetworksPanel extends TablePanel<NetworkView> {
                     "Network '" + network.name() + "' is built-in and cannot be removed.",
                     MessageDialogButton.OK
             );
+            focusTable();
             return;
         }
         if (!ConfirmDialog.ask(gui, "Delete network", "Remove network '" + network.name() + "'?")) {
             status.setStatus("Delete cancelled");
+            focusTable();
             return;
         }
         try {
@@ -144,5 +148,6 @@ public class NetworksPanel extends TablePanel<NetworkView> {
         } catch (Exception e) {
             showError("Delete failed", e);
         }
+        focusTable();
     }
 }

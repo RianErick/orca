@@ -96,6 +96,13 @@ public class MainWindow extends BasicWindow {
                 selection = description;
                 paintChrome();
             }
+
+            @Override
+            public void noteUserInteraction() {
+                // Push the auto-refresh deadline forward so a click is not immediately undone
+                // by a model rebuild that used to snap the highlight back to row 0.
+                lastRefreshMillis = System.currentTimeMillis();
+            }
         };
 
         containersPanel = new ContainersPanel(docker, gui, status);
@@ -161,6 +168,9 @@ public class MainWindow extends BasicWindow {
         setComponent(root);
 
         message = mouseEnabled ? "Ready — click or use the keyboard" : "Ready — keyboard mode";
+        for (int i = 0; i < panels.length; i++) {
+            panels[i].setActive(i == 0);
+        }
         selectTab(0);
 
         addWindowListener(new WindowListenerAdapter() {
@@ -357,15 +367,13 @@ public class MainWindow extends BasicWindow {
         for (int i = 0; i < tabs.length; i++) {
             tabs[i].setTheme(OrcaTheme.tab(i == index));
             tabs[i].setLabel((i == index ? " ▌" : "  ") + labels[i] + " ");
+            panels[i].setActive(i == index);
         }
 
         if (lastSize != null) {
             relayout();
         }
         refreshActive();
-        // Deferred: a click on the tab hands focus back to the button once the event finishes,
-        // so the table would otherwise never get the arrow keys.
-        gui.getGUIThread().invokeLater(() -> activePanel().getTable().takeFocus());
     }
 
     private TablePanel<?> activePanel() {
@@ -373,18 +381,19 @@ public class MainWindow extends BasicWindow {
     }
 
     /**
-     * Refreshes every view so the header counters stay truthful; the active one goes last
-     * so its status message is the one left on screen.
+     * Refreshes every view so the header counters stay truthful; only the active tab
+     * announces status / selection so inactive reloads cannot clobber the UI.
      */
     private void refreshActive() {
         for (TablePanel<?> panel : panels) {
-            if (panel != activePanel()) {
-                panel.refresh();
-            }
+            panel.refresh(panel == activePanel());
         }
-        activePanel().refresh();
         lastRefreshMillis = System.currentTimeMillis();
         paintChrome();
+        activePanel().getTable().takeFocus();
+        // Deferred: a click on a toolbar button hands focus back to the button once the event
+        // finishes, so we reclaim the table on the next GUI tick.
+        gui.getGUIThread().invokeLater(() -> activePanel().getTable().takeFocus());
     }
 
     private void showHelp() {

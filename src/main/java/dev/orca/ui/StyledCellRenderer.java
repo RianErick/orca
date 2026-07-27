@@ -3,13 +3,15 @@ package dev.orca.ui;
 import com.googlecode.lanterna.SGR;
 import com.googlecode.lanterna.TerminalSize;
 import com.googlecode.lanterna.TextColor;
-import com.googlecode.lanterna.graphics.ThemeDefinition;
 import com.googlecode.lanterna.gui2.TextGUIGraphics;
 import com.googlecode.lanterna.gui2.table.Table;
 import com.googlecode.lanterna.gui2.table.TableCellRenderer;
 
 /**
  * Draws table cells with zebra stripes, per-cell colour and a clear selection cue.
+ *
+ * Selection uses the strong accent background even when the table is unfocused, so a click
+ * always looks selected — the previous idle colour was easy to miss.
  */
 public final class StyledCellRenderer implements TableCellRenderer<String> {
 
@@ -34,31 +36,24 @@ public final class StyledCellRenderer implements TableCellRenderer<String> {
 
     @Override
     public void drawCell(Table<String> table, String cell, int columnIndex, int rowIndex, TextGUIGraphics graphics) {
-        ThemeDefinition definition = table.getTheme().getDefinition(Table.class);
-        boolean selected = rowIndex == table.getSelectedRow()
-                && (!table.isCellSelection() || columnIndex == table.getSelectedColumn());
-        boolean focused = table.isFocused();
+        boolean selected = rowIndex == table.getSelectedRow();
 
         if (selected) {
-            graphics.applyThemeStyle(focused ? definition.getActive() : definition.getSelected());
-            if (focused) {
-                graphics.setBackgroundColor(Palette.SELECTION);
-            } else {
-                graphics.setBackgroundColor(Palette.SELECTION_IDLE);
-            }
+            graphics.setBackgroundColor(Palette.SELECTION);
+            graphics.setForegroundColor(Palette.TEXT);
         } else {
-            graphics.applyThemeStyle(definition.getNormal());
             graphics.setBackgroundColor(rowIndex % 2 == 1 ? Palette.SURFACE : Palette.BACKGROUND);
+            graphics.setForegroundColor(Palette.TEXT);
         }
         graphics.fill(' ');
 
         String text = cell == null ? "" : cell;
         TextColor color = colors.colorAt(rowIndex, columnIndex);
-
-        if (color != null) {
+        if (color != null && !selected) {
             graphics.setForegroundColor(color);
-        } else if (selected) {
-            graphics.setForegroundColor(Palette.TEXT);
+        } else if (color != null) {
+            // Keep state colours readable on the selection background.
+            graphics.setForegroundColor(color);
         }
 
         if (selected) {
