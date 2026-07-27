@@ -6,7 +6,10 @@ import com.github.dockerjava.api.command.CreateContainerCmd;
 import com.github.dockerjava.api.command.CreateContainerResponse;
 import com.github.dockerjava.api.command.CreateNetworkResponse;
 import com.github.dockerjava.api.command.InspectContainerResponse;
+import com.github.dockerjava.api.exception.ConflictException;
 import com.github.dockerjava.api.exception.DockerException;
+import com.github.dockerjava.api.exception.NotFoundException;
+import com.github.dockerjava.api.exception.NotModifiedException;
 import com.github.dockerjava.api.model.Container;
 import com.github.dockerjava.api.model.ContainerPort;
 import com.github.dockerjava.api.model.ExposedPort;
@@ -98,15 +101,27 @@ public class DockerService implements Closeable {
     }
 
     public void start(String id) {
-        client.startContainerCmd(id).exec();
+        try {
+            client.startContainerCmd(id).exec();
+        } catch (NotModifiedException ignored) {
+            // Already running — treat as success so the UI does not flash a cryptic 304.
+        }
     }
 
     public void stop(String id) {
-        client.stopContainerCmd(id).exec();
+        try {
+            client.stopContainerCmd(id).exec();
+        } catch (NotModifiedException ignored) {
+            // Already stopped — treat as success so the UI does not flash a cryptic 304.
+        }
     }
 
     public void restart(String id) {
-        client.restartContainerCmd(id).exec();
+        try {
+            client.restartContainerCmd(id).exec();
+        } catch (NotModifiedException ignored) {
+            // Engine reported no change; leave quietly.
+        }
     }
 
     public void removeContainer(String id, boolean force) {
@@ -119,6 +134,7 @@ public class DockerService implements Closeable {
             client.logContainerCmd(id)
                     .withStdOut(true)
                     .withStdErr(true)
+                    .withTimestamps(false)
                     .withTail(tail)
                     .exec(new ResultCallback.Adapter<Frame>() {
                         @Override
@@ -133,7 +149,7 @@ public class DockerService implements Closeable {
             Thread.currentThread().interrupt();
             throw new DockerServiceException("Interrupted while reading logs", e);
         }
-        return out.toString();
+        return sanitizeLogs(out.toString());
     }
 
     public InspectContainerResponse inspectContainer(String id) {
@@ -228,9 +244,35 @@ public class DockerService implements Closeable {
         while (current.getCause() != null && current.getCause() != current) {
             current = current.getCause();
         }
-        if (current instanceof DockerException dockerException) {
-            return dockerException.getMessage();
+
+        if (current instanceof NotModifiedException) {
+            return "Nothing to do — the container is already in that state (Docker 304).";
         }
+        if (current instanceof NotFoundException) {
+            return "Not found — it may have been removed already.";
+        }
+        if (current instanceof ConflictException) {
+            String detail = current.getMessage();
+            return "Conflict — Docker refused the change"
+                    + (detail == null || detail.isBlank() ? "." : ": " + shortDockerDetail(detail));
+        }
+        if (current instanceof DockerException dockerException) {
+            int status = dockerException.getHttpStatus();
+            String detail = shortDockerDetail(dockerException.getMessage());
+            return switch (status) {
+                case 304 -> "Nothing to do — already in that state (HTTP 304).";
+                case 404 -> "Not found — it may have been removed already.";
+                case 409 -> "Conflict — Docker refused the change: " + detail;
+                case 500, 502, 503 -> "Docker engine error (" + status + "): " + detail;
+                default -> status > 0
+                        ? "Docker error " + status + ": " + detail
+                        : detail;
+            };
+        }
+        if (current instanceof DockerServiceException && current.getMessage() != null) {
+            return current.getMessage();
+        }
+
         String message = current.getMessage();
         if (message == null || message.isBlank()) {
             return "Docker is not reachable. Is the daemon running?";
@@ -242,7 +284,67 @@ public class DockerService implements Closeable {
                 || lower.contains("docker.sock")) {
             return "Docker is not accessible (" + message + "). Check DOCKER_HOST / docker.sock permissions.";
         }
+        if (lower.contains("304") || lower.contains("not modified")) {
+            return "Nothing to do — the container is already in that state.";
+        }
         return message;
+    }
+
+    /**
+     * Makes container logs safe for a terminal TextBox: strip ANSI, normalize newlines,
+     * drop control characters and cap absurdly long lines.
+     */
+    public static String sanitizeLogs(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return "";
+        }
+        String noAnsi = raw.replaceAll("\u001B\\[[0-9;?]*[ -/]*[@-~]", "")
+                .replaceAll("\u001B\\].*?\u0007", "")
+                .replace("\u001B", "");
+        String normalized = noAnsi.replace("\r\n", "\n").replace('\r', '\n');
+
+        StringBuilder cleaned = new StringBuilder(normalized.length());
+        int lineLength = 0;
+        final int maxLine = 400;
+        for (int i = 0; i < normalized.length(); i++) {
+            char ch = normalized.charAt(i);
+            if (ch == '\n') {
+                cleaned.append('\n');
+                lineLength = 0;
+                continue;
+            }
+            if (ch == '\t') {
+                cleaned.append("    ");
+                lineLength += 4;
+                continue;
+            }
+            if (ch < 32 || ch == 127) {
+                continue;
+            }
+            if (lineLength >= maxLine) {
+                if (lineLength == maxLine) {
+                    cleaned.append('…');
+                    lineLength++;
+                }
+                continue;
+            }
+            cleaned.append(ch);
+            lineLength++;
+        }
+        return cleaned.toString();
+    }
+
+    private static String shortDockerDetail(String message) {
+        if (message == null) {
+            return "unknown error";
+        }
+        String trimmed = message.replace('\n', ' ').trim();
+        // docker-java often prefixes "Status 304: {" ...
+        trimmed = trimmed.replaceFirst("(?i)^Status\\s+\\d+:\\s*", "");
+        if (trimmed.length() > 160) {
+            return trimmed.substring(0, 157) + "...";
+        }
+        return trimmed.isBlank() ? "unknown error" : trimmed;
     }
 
     @Override
