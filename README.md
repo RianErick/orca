@@ -175,7 +175,7 @@ Contributions are welcome. Open an issue to discuss larger changes, or submit a 
 
 ## License
 
-This project is open source. Add a `LICENSE` file (for example MIT or Apache-2.0) when you publish the repository.
+This project is released under the [MIT License](LICENSE) — free to use, modify, and distribute.
 
 ---
 
