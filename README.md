@@ -24,6 +24,12 @@
 
 Mouse support uses modern **SGR mouse tracking** (`CSI ?1006h`). Prefer a real terminal emulator (GNOME Terminal, Kitty, Alacritty, iTerm2, Windows Terminal). Some IDE embedded terminals do not forward mouse events.
 
+<p align="center">
+  <img src="docs/screenshot.jpg" alt="orca — containers view" width="900" />
+  <br />
+  <em>Containers view with live KPIs, colour-coded state badges, and clickable toolbar.</em>
+</p>
+
 ## Features
 
 - **Mouse-first navigation** — click tabs, action buttons, and rows
