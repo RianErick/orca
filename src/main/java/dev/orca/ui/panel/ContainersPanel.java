@@ -10,11 +10,14 @@ import dev.orca.ui.Columns;
 import dev.orca.ui.Palette;
 import dev.orca.ui.StatusSink;
 import dev.orca.ui.UiBars;
+import dev.orca.model.MountView;
 import dev.orca.ui.dialog.ConfirmDialog;
 import dev.orca.ui.dialog.CreateContainerDialog;
 import dev.orca.ui.dialog.LogViewerDialog;
+import dev.orca.ui.dialog.TextViewerDialog;
 
 import java.util.List;
+import java.util.stream.Collectors;
 
 public class ContainersPanel extends TablePanel<ContainerView> {
 
@@ -35,6 +38,7 @@ public class ContainersPanel extends TablePanel<ContainerView> {
                 UiBars.chip("■ Stop", () -> runOnSelected("Stopped", docker::stop), Palette.WARNING),
                 UiBars.button("↻ Restart", () -> runOnSelected("Restarted", docker::restart)),
                 UiBars.button("☰ Logs", this::showLogs),
+                UiBars.button("⧉ Mounts", this::showMounts),
                 UiBars.chip("× Delete", this::deleteSelected, Palette.STOPPED)
         );
         assemble(toolbar);
@@ -73,6 +77,12 @@ public class ContainersPanel extends TablePanel<ContainerView> {
     }
 
     @Override
+    protected String searchText(ContainerView container) {
+        return container.name() + " " + container.image() + " " + container.status()
+                + " " + container.ports() + " " + (container.running() ? "running" : "stopped exit");
+    }
+
+    @Override
     protected String noun() {
         return "containers";
     }
@@ -90,11 +100,11 @@ public class ContainersPanel extends TablePanel<ContainerView> {
     }
 
     public long runningCount() {
-        return items().stream().filter(ContainerView::running).count();
+        return allItems().stream().filter(ContainerView::running).count();
     }
 
     public long stoppedCount() {
-        return Math.max(0, items().size() - runningCount());
+        return Math.max(0, allItems().size() - runningCount());
     }
 
     @Override
@@ -105,6 +115,7 @@ public class ContainersPanel extends TablePanel<ContainerView> {
             case 'x' -> runOnSelected("Stopped", docker::stop);
             case 'R' -> runOnSelected("Restarted", docker::restart);
             case 'l' -> showLogs();
+            case 'm' -> showMounts();
             case 'd' -> deleteSelected();
             default -> {
                 return false;
@@ -146,6 +157,43 @@ public class ContainersPanel extends TablePanel<ContainerView> {
             status.setStatus("Logs closed");
         } catch (Exception e) {
             showError("Logs failed", e);
+        }
+        focusTable();
+    }
+
+    private void showMounts() {
+        ContainerView container = selected();
+        if (container == null) {
+            requireSelection("inspect mounts");
+            return;
+        }
+        try {
+            status.setStatus("Fetching mounts…");
+            List<MountView> mounts = docker.listContainerMounts(container.id());
+            String body;
+            if (mounts.isEmpty()) {
+                body = "No mounts on this container.";
+            } else {
+                body = mounts.stream()
+                        .map(mount -> String.format(
+                                "%-7s  %s%n         → %s  (%s)%s",
+                                mount.typeLabel(),
+                                mount.displaySource(),
+                                mount.destination(),
+                                mount.access(),
+                                mount.mode().isBlank() ? "" : "  " + mount.mode()
+                        ))
+                        .collect(Collectors.joining("\n"));
+            }
+            TextViewerDialog.show(
+                    gui,
+                    "Mounts — " + label(container),
+                    body,
+                    mounts.size() + " mount(s)"
+            );
+            status.setStatus("Mounts closed");
+        } catch (Exception e) {
+            showError("Mounts failed", e);
         }
         focusTable();
     }

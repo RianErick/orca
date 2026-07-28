@@ -5,12 +5,16 @@ import com.github.dockerjava.api.async.ResultCallback;
 import com.github.dockerjava.api.command.CreateContainerCmd;
 import com.github.dockerjava.api.command.CreateContainerResponse;
 import com.github.dockerjava.api.command.CreateNetworkResponse;
+import com.github.dockerjava.api.command.CreateVolumeResponse;
 import com.github.dockerjava.api.command.InspectContainerResponse;
+import com.github.dockerjava.api.command.InspectVolumeResponse;
+import com.github.dockerjava.api.command.ListVolumesResponse;
 import com.github.dockerjava.api.exception.ConflictException;
 import com.github.dockerjava.api.exception.DockerException;
 import com.github.dockerjava.api.exception.NotFoundException;
 import com.github.dockerjava.api.exception.NotModifiedException;
 import com.github.dockerjava.api.model.Container;
+import com.github.dockerjava.api.model.ContainerMount;
 import com.github.dockerjava.api.model.ContainerPort;
 import com.github.dockerjava.api.model.ExposedPort;
 import com.github.dockerjava.api.model.Frame;
@@ -22,7 +26,9 @@ import com.github.dockerjava.api.model.PullResponseItem;
 import com.github.dockerjava.api.command.PullImageResultCallback;
 import dev.orca.model.ContainerView;
 import dev.orca.model.ImageView;
+import dev.orca.model.MountView;
 import dev.orca.model.NetworkView;
+import dev.orca.model.VolumeView;
 
 import java.io.Closeable;
 import java.nio.charset.StandardCharsets;
@@ -237,6 +243,117 @@ public class DockerService implements Closeable {
 
     public void removeNetwork(String id) {
         client.removeNetworkCmd(id).exec();
+    }
+
+    public List<VolumeView> listVolumes() {
+        ListVolumesResponse response = client.listVolumesCmd().exec();
+        List<InspectVolumeResponse> volumes = response.getVolumes();
+        if (volumes == null) {
+            return List.of();
+        }
+        Map<String, List<String>> usageByVolume = volumeUsageIndex();
+        List<VolumeView> views = new ArrayList<>(volumes.size());
+        for (InspectVolumeResponse volume : volumes) {
+            String name = nullToEmpty(volume.getName());
+            List<String> usages = usageByVolume.getOrDefault(name, List.of());
+            views.add(new VolumeView(
+                    name,
+                    nullToEmpty(volume.getDriver()),
+                    nullToEmpty(volume.getMountpoint()),
+                    usages.size(),
+                    List.copyOf(usages)
+            ));
+        }
+        views.sort((a, b) -> a.name().compareToIgnoreCase(b.name()));
+        return views;
+    }
+
+    public String createVolume(String name, String driver) {
+        String volumeName = requireNonBlank(name, "Volume name is required");
+        String volumeDriver = (driver == null || driver.isBlank()) ? "local" : driver.trim();
+        CreateVolumeResponse response = client.createVolumeCmd()
+                .withName(volumeName)
+                .withDriver(volumeDriver)
+                .exec();
+        return response.getName() != null ? response.getName() : volumeName;
+    }
+
+    public void removeVolume(String name) {
+        client.removeVolumeCmd(requireNonBlank(name, "Volume name is required")).exec();
+    }
+
+    /**
+     * Mounts attached to a container (named volumes and bind mounts).
+     */
+    public List<MountView> listContainerMounts(String containerId) {
+        String id = requireNonBlank(containerId, "Container id is required");
+        InspectContainerResponse inspected = client.inspectContainerCmd(id).exec();
+        String containerName = inspected.getName() != null
+                ? firstName(new String[]{inspected.getName()})
+                : shortId(id);
+
+        List<MountView> mounts = new ArrayList<>();
+        if (inspected.getMounts() != null) {
+            for (InspectContainerResponse.Mount mount : inspected.getMounts()) {
+                String destination = mount.getDestination() != null
+                        ? nullToEmpty(mount.getDestination().getPath())
+                        : "";
+                boolean rw = mount.getRW() == null || Boolean.TRUE.equals(mount.getRW());
+                mounts.add(new MountView(
+                        containerName,
+                        mount.getName() != null && !mount.getName().isBlank() ? "volume" : "bind",
+                        nullToEmpty(mount.getName()),
+                        nullToEmpty(mount.getSource()),
+                        destination,
+                        nullToEmpty(mount.getMode()),
+                        rw
+                ));
+            }
+        }
+        return mounts;
+    }
+
+    /**
+     * Every mount across all containers — useful for volume "who uses this" detail.
+     */
+    public List<MountView> listAllMounts() {
+        List<MountView> mounts = new ArrayList<>();
+        List<Container> containers = client.listContainersCmd().withShowAll(true).exec();
+        for (Container container : containers) {
+            String containerName = firstName(container.getNames());
+            if (containerName.isBlank()) {
+                containerName = shortId(container.getId());
+            }
+            if (container.getMounts() == null) {
+                continue;
+            }
+            for (ContainerMount mount : container.getMounts()) {
+                boolean rw = mount.getRw() == null || Boolean.TRUE.equals(mount.getRw());
+                mounts.add(new MountView(
+                        containerName,
+                        mount.getName() != null && !mount.getName().isBlank() ? "volume" : "bind",
+                        nullToEmpty(mount.getName()),
+                        nullToEmpty(mount.getSource()),
+                        nullToEmpty(mount.getDestination()),
+                        nullToEmpty(mount.getMode()),
+                        rw
+                ));
+            }
+        }
+        return mounts;
+    }
+
+    private Map<String, List<String>> volumeUsageIndex() {
+        Map<String, List<String>> index = new LinkedHashMap<>();
+        for (MountView mount : listAllMounts()) {
+            if (mount.name() == null || mount.name().isBlank()) {
+                continue;
+            }
+            String line = mount.containerName() + " → " + mount.destination()
+                    + " (" + mount.access() + ")";
+            index.computeIfAbsent(mount.name(), key -> new ArrayList<>()).add(line);
+        }
+        return index;
     }
 
     public static String friendlyMessage(Throwable error) {
