@@ -21,6 +21,7 @@ import dev.orca.ui.panel.ContainersPanel;
 import dev.orca.ui.panel.ImagesPanel;
 import dev.orca.ui.panel.NetworksPanel;
 import dev.orca.ui.panel.TablePanel;
+import dev.orca.ui.panel.VolumesPanel;
 
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
@@ -47,6 +48,7 @@ public class MainWindow extends BasicWindow {
     private final Label kpiStopped = new Label("");
     private final Label kpiImages = new Label("");
     private final Label kpiNetworks = new Label("");
+    private final Label kpiVolumes = new Label("");
     private final Label clockLabel = new Label("");
     private final Label topRule = new Label("");
     private final Label middleRule = new Label("");
@@ -63,6 +65,7 @@ public class MainWindow extends BasicWindow {
     private final ContainersPanel containersPanel;
     private final ImagesPanel imagesPanel;
     private final NetworksPanel networksPanel;
+    private final VolumesPanel volumesPanel;
 
     private final ScheduledExecutorService ticker =
             Executors.newSingleThreadScheduledExecutor(runnable -> {
@@ -108,12 +111,14 @@ public class MainWindow extends BasicWindow {
         containersPanel = new ContainersPanel(docker, gui, status);
         imagesPanel = new ImagesPanel(docker, gui, status);
         networksPanel = new NetworksPanel(docker, gui, status);
-        panels = new TablePanel<?>[]{containersPanel, imagesPanel, networksPanel};
+        volumesPanel = new VolumesPanel(docker, gui, status);
+        panels = new TablePanel<?>[]{containersPanel, imagesPanel, networksPanel, volumesPanel};
 
         tabs = new Button[]{
                 UiBars.button("Containers", () -> selectTab(0)),
                 UiBars.button("Images", () -> selectTab(1)),
-                UiBars.button("Networks", () -> selectTab(2))
+                UiBars.button("Networks", () -> selectTab(2)),
+                UiBars.button("Volumes", () -> selectTab(3))
         };
 
         Panel tabBar = new Panel(new LinearLayout(Direction.HORIZONTAL).setSpacing(1));
@@ -136,6 +141,7 @@ public class MainWindow extends BasicWindow {
         kpiStopped.setForegroundColor(Palette.STOPPED);
         kpiImages.setForegroundColor(Palette.MUTED);
         kpiNetworks.setForegroundColor(Palette.MUTED);
+        kpiVolumes.setForegroundColor(Palette.MUTED);
         clockLabel.setForegroundColor(Palette.DIM);
         statusBar.setForegroundColor(Palette.TEXT);
         footer.setForegroundColor(Palette.DIM);
@@ -152,6 +158,7 @@ public class MainWindow extends BasicWindow {
         headerBar.addComponent(kpiStopped);
         headerBar.addComponent(kpiImages);
         headerBar.addComponent(kpiNetworks);
+        headerBar.addComponent(kpiVolumes);
         headerBar.addComponent(clockLabel);
 
         Panel root = new Panel(new LinearLayout(Direction.VERTICAL).setSpacing(0));
@@ -259,6 +266,7 @@ public class MainWindow extends BasicWindow {
             kpiImages.setForegroundColor(Palette.MUTED);
         }
         kpiNetworks.setText(" ⇄ " + networksPanel.count() + " net ");
+        kpiVolumes.setText(" ▤ " + volumesPanel.count() + " vol ");
         clockLabel.setText("  " + LocalTime.now().format(CLOCK) + " ");
 
         String rule = "─".repeat(width);
@@ -281,9 +289,10 @@ public class MainWindow extends BasicWindow {
 
     private String shortcuts() {
         return switch (selectedTab) {
-            case 0 -> "1/2/3 views · c create · s start · x stop · R restart · l logs · d delete · a auto · q quit";
-            case 1 -> "1/2/3 views · p pull · d delete · r refresh · a auto · ? help · q quit";
-            default -> "1/2/3 views · c create · d delete · r refresh · a auto · ? help · q quit";
+            case 0 -> "1-4 views · / filter · c create · s start · x stop · R restart · l logs · m mounts · d delete · q quit";
+            case 1 -> "1-4 views · / filter · p pull · d delete · r refresh · a auto · ? help · q quit";
+            case 2 -> "1-4 views · / filter · c create · d delete · r refresh · a auto · ? help · q quit";
+            default -> "1-4 views · / filter · c create · m mounts · d delete · r refresh · a auto · ? help · q quit";
         };
     }
 
@@ -304,11 +313,31 @@ public class MainWindow extends BasicWindow {
             close();
             return true;
         }
+        // While filtering, route almost everything to the panel (including q, Esc, digits).
+        if (activePanel().isFiltering()) {
+            if (key.getKeyType() == KeyType.ArrowUp
+                    || key.getKeyType() == KeyType.ArrowDown
+                    || key.getKeyType() == KeyType.PageUp
+                    || key.getKeyType() == KeyType.PageDown
+                    || key.getKeyType() == KeyType.Home
+                    || key.getKeyType() == KeyType.End) {
+                activePanel().getTable().handleKeyStroke(key);
+                return true;
+            }
+            return activePanel().handleKey(key);
+        }
         // Arrows always drive the table, even when a button holds the focus after a click.
         switch (key.getKeyType()) {
             case ArrowUp, ArrowDown, PageUp, PageDown, Home, End -> {
                 activePanel().getTable().handleKeyStroke(key);
                 return true;
+            }
+            case Escape -> {
+                if (activePanel().hasFilter()) {
+                    activePanel().clearFilter();
+                    return true;
+                }
+                return false;
             }
             default -> {
             }
@@ -342,6 +371,11 @@ public class MainWindow extends BasicWindow {
                 selectTab(2);
                 yield true;
             }
+            case '4' -> {
+                selectTab(3);
+                yield true;
+            }
+            case '/' -> activePanel().handleKey(key);
             case '?' -> {
                 showHelp();
                 yield true;
@@ -363,7 +397,7 @@ public class MainWindow extends BasicWindow {
         content.removeAllComponents();
         content.addComponent(panels[index]);
 
-        String[] labels = {"Containers", "Images", "Networks"};
+        String[] labels = {"Containers", "Images", "Networks", "Volumes"};
         for (int i = 0; i < tabs.length; i++) {
             tabs[i].setTheme(OrcaTheme.tab(i == index));
             tabs[i].setLabel((i == index ? " ▌" : "  ") + labels[i] + " ");
@@ -408,14 +442,16 @@ public class MainWindow extends BasicWindow {
                           Hold Shift to select text for copying
 
                         Keyboard
-                          1 2 3   switch views          r   refresh now
-                          ↑ ↓     move the selection    a   pause/resume auto-refresh
-                          Tab     move focus            ?   this help
+                          1 2 3 4  switch views         r   refresh now
+                          /        filter by name…      Esc clear filter
+                          ↑ ↓      move the selection   a   pause/resume auto-refresh
+                          Tab      move focus           ?   this help
                                                         q   quit
 
-                        Containers   c create · s start · x stop · R restart · l logs · d delete
+                        Containers   c create · s start · x stop · R restart · l logs · m mounts · d delete
                         Images       p pull · d delete
                         Networks     c create · d delete
+                        Volumes      c create · m mounts · d delete
 
                         Badges
                           ● RUN / ● OK   running   ○ EXIT / ○ STOP   stopped

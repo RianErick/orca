@@ -90,7 +90,14 @@ public class NetworksPanel extends TablePanel<NetworkView> {
     }
 
     public long userDefinedCount() {
-        return items().stream().filter(network -> !BUILT_IN.contains(network.name())).count();
+        return allItems().stream().filter(network -> !BUILT_IN.contains(network.name())).count();
+    }
+
+    @Override
+    protected String searchText(NetworkView network) {
+        boolean builtIn = BUILT_IN.contains(network.name());
+        return network.shortId() + " " + network.name() + " " + network.driver()
+                + " " + network.scope() + (builtIn ? " built-in" : " user-defined");
     }
 
     @Override

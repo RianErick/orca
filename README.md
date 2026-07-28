@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>A modern, clickable terminal UI for Docker</strong><br />
-  Manage containers, images, and networks with mouse and keyboard.
+  Manage containers, images, networks, and volumes with mouse and keyboard.
 </p>
 
 <p align="center">
@@ -33,11 +33,13 @@ Mouse support uses modern **SGR mouse tracking** (`CSI ?1006h`). Prefer a real t
 ## Features
 
 - **Mouse-first navigation** — click tabs, action buttons, and rows
-- Browse **containers**, **images**, and **networks** in dedicated views
+- Browse **containers**, **images**, **networks**, and **volumes** in dedicated views
+- **Filter / search** with `/` (name, image, status…) — Esc clears
 - Create, start, stop, restart, and remove containers
-- View container logs in-place
+- View container logs and mounts in-place
 - Pull and remove images
 - Create and remove networks
+- Create and remove volumes; see which containers mount each volume
 - Modern dark theme with clear selection feedback
 - Friendly status messages when Docker is unreachable
 
@@ -97,7 +99,7 @@ If your user cannot access the Docker socket, either join the `docker` group or 
 
 | Action | How |
 |--------|-----|
-| Switch views | Click **Containers** / **Images** / **Networks** |
+| Switch views | Click **Containers** / **Images** / **Networks** / **Volumes** |
 | Run actions | Click toolbar buttons (`Create`, `Start`, `Stop`, …) |
 | Select a row | Click a table row |
 | Dialogs | Click dialog buttons (`Create`, `Cancel`, `Yes`, …) |
@@ -111,7 +113,9 @@ If your user cannot access the Docker socket, either join the `docker` group or 
 
 | Key | Action |
 |-----|--------|
-| `1` / `2` / `3` | Switch to Containers / Images / Networks |
+| `1` / `2` / `3` / `4` | Switch to Containers / Images / Networks / Volumes |
+| `/` | Filter / search (name, image, status, …) — like lazygit |
+| `Esc` | Clear the active filter |
 | `↑` / `↓` | Move the row selection |
 | `Tab` | Move focus between buttons and the table |
 | `r` | Refresh the current tab |
@@ -127,6 +131,7 @@ If your user cannot access the Docker socket, either join the `docker` group or 
 | `x` | Stop |
 | `R` | Restart |
 | `l` | View logs |
+| `m` | View mounts |
 | `d` | Delete (force) |
 
 #### Images
@@ -142,6 +147,14 @@ If your user cannot access the Docker socket, either join the `docker` group or 
 |-----|--------|
 | `c` | Create a network |
 | `d` | Delete a network |
+
+#### Volumes
+
+| Key | Action |
+|-----|--------|
+| `c` | Create a volume |
+| `m` | Show containers mounting the selected volume |
+| `d` | Delete a volume |
 
 ## Tech stack
 

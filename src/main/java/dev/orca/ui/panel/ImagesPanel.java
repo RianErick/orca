@@ -88,7 +88,13 @@ public class ImagesPanel extends TablePanel<ImageView> {
     }
 
     public long untaggedCount() {
-        return items().stream().filter(image -> UNTAGGED.equals(image.repositoryTag())).count();
+        return allItems().stream().filter(image -> UNTAGGED.equals(image.repositoryTag())).count();
+    }
+
+    @Override
+    protected String searchText(ImageView image) {
+        return image.shortId() + " " + image.repositoryTag() + " " + image.size()
+                + (UNTAGGED.equals(image.repositoryTag()) ? " dangling untagged none" : "");
     }
 
     @Override

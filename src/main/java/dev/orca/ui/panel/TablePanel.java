@@ -21,10 +21,11 @@ import dev.orca.ui.StyledCellRenderer;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
- * Shared behaviour for the three views: a toolbar, a table that stretches to the window width,
- * colour-coded cells and a selection that survives refreshes.
+ * Shared behaviour for the resource views: a toolbar, a table that stretches to the window width,
+ * colour-coded cells, a selection that survives refreshes, and {@code /} filter like lazygit.
  */
 public abstract class TablePanel<T> extends Panel {
 
@@ -38,6 +39,7 @@ public abstract class TablePanel<T> extends Panel {
     private final Columns columns;
     private final String[] headers;
     private final Label heading;
+    private final List<T> allItems = new ArrayList<>();
     private final List<T> items = new ArrayList<>();
 
     private int[] widths;
@@ -46,6 +48,10 @@ public abstract class TablePanel<T> extends Panel {
     private boolean active;
     /** Stable selection key — survives model rebuilds that temporarily zero {@code selectedRow}. */
     private String selectedIdentity;
+    /** Active filter query (substring match on {@link #searchText}). Empty means no filter. */
+    private String filterQuery = "";
+    /** When true, typed characters edit the filter instead of triggering shortcuts. */
+    private boolean filtering;
 
     protected TablePanel(WindowBasedTextGUI gui, StatusSink status, Columns columns, String... headers) {
         super(new LinearLayout(Direction.VERTICAL).setSpacing(0));
@@ -87,7 +93,25 @@ public abstract class TablePanel<T> extends Panel {
     /** One-line description of the highlighted row, shown in the status bar. */
     public abstract String describeSelection();
 
+    /**
+     * Text used by the {@code /} filter. Default joins table cells (name, image, status, …).
+     */
+    protected String searchText(T item) {
+        return String.join(" ", cells(item));
+    }
+
     public boolean handleKey(KeyStroke key) {
+        if (filtering) {
+            return handleFilterInput(key);
+        }
+        if (key.getKeyType() == KeyType.Escape && hasFilter()) {
+            clearFilter();
+            return true;
+        }
+        if (key.getKeyType() == KeyType.Character && key.getCharacter() != null && key.getCharacter() == '/') {
+            beginFilter();
+            return true;
+        }
         if (key.getKeyType() != KeyType.Character || key.getCharacter() == null) {
             return false;
         }
@@ -105,6 +129,10 @@ public abstract class TablePanel<T> extends Panel {
         if (active) {
             table.forceSelectionNotification();
             focusTable();
+        } else if (filtering) {
+            // Leave edit mode when switching tabs, but keep the query.
+            filtering = false;
+            updateHeading();
         }
     }
 
@@ -112,12 +140,29 @@ public abstract class TablePanel<T> extends Panel {
         return active;
     }
 
+    public boolean isFiltering() {
+        return filtering;
+    }
+
+    public boolean hasFilter() {
+        return filterQuery != null && !filterQuery.isEmpty();
+    }
+
+    public String filterQuery() {
+        return filterQuery;
+    }
+
+    /** Unfiltered total — used by header KPIs. */
     public int count() {
-        return items.size();
+        return allItems.size();
     }
 
     protected List<T> items() {
         return items;
+    }
+
+    protected List<T> allItems() {
+        return allItems;
     }
 
     protected T selected() {
@@ -149,15 +194,21 @@ public abstract class TablePanel<T> extends Panel {
         String previous = selectedIdentity != null ? selectedIdentity : selectedIdentityFromRow();
         try {
             List<T> loaded = load();
-            items.clear();
-            items.addAll(loaded);
+            allItems.clear();
+            allItems.addAll(loaded);
             loadFailed = false;
-            render(previous);
+            applyFilter(previous);
             if (announce && active) {
-                status.setStatus(items.size() + " " + noun() + " loaded");
+                if (hasFilter()) {
+                    status.setStatus(items.size() + "/" + allItems.size() + " " + noun()
+                            + "  ·  /" + filterQuery);
+                } else {
+                    status.setStatus(items.size() + " " + noun() + " loaded");
+                }
             }
         } catch (Exception e) {
             loadFailed = true;
+            allItems.clear();
             items.clear();
             render(null);
             if (announce && active) {
@@ -168,6 +219,90 @@ public abstract class TablePanel<T> extends Panel {
 
     public void refresh() {
         refresh(true);
+    }
+
+    private void beginFilter() {
+        filtering = true;
+        updateHeading();
+        if (active) {
+            status.setStatus("Filter: /" + filterQuery + "█  ·  Esc clear  ·  Enter done");
+            status.setSelection(describeSelection());
+        }
+        focusTable();
+    }
+
+    private boolean handleFilterInput(KeyStroke key) {
+        if (key.getKeyType() == KeyType.Escape) {
+            clearFilter();
+            return true;
+        }
+        if (key.getKeyType() == KeyType.Enter) {
+            filtering = false;
+            updateHeading();
+            if (active) {
+                status.setStatus(hasFilter()
+                        ? "Filter: /" + filterQuery + "  ·  Esc to clear"
+                        : items.size() + " " + noun());
+            }
+            focusTable();
+            return true;
+        }
+        if (key.getKeyType() == KeyType.Backspace || key.getKeyType() == KeyType.Delete) {
+            if (!filterQuery.isEmpty()) {
+                filterQuery = filterQuery.substring(0, filterQuery.length() - 1);
+                applyFilter(selectedIdentity);
+                announceFilter();
+            }
+            return true;
+        }
+        if (key.getKeyType() == KeyType.Character && key.getCharacter() != null) {
+            char ch = key.getCharacter();
+            if (!Character.isISOControl(ch)) {
+                filterQuery += ch;
+                applyFilter(selectedIdentity);
+                announceFilter();
+            }
+            return true;
+        }
+        // Let arrows etc. fall through to the global handler.
+        return false;
+    }
+
+    public void clearFilter() {
+        boolean had = hasFilter() || filtering;
+        filterQuery = "";
+        filtering = false;
+        if (had) {
+            applyFilter(selectedIdentity);
+            if (active) {
+                status.setStatus("Filter cleared  ·  " + items.size() + " " + noun());
+            }
+        }
+        updateHeading();
+        focusTable();
+    }
+
+    private void announceFilter() {
+        if (active) {
+            status.setStatus("Filter: /" + filterQuery + "█  ·  "
+                    + items.size() + "/" + allItems.size() + " " + noun());
+        }
+    }
+
+    private void applyFilter(String identityToRestore) {
+        items.clear();
+        if (!hasFilter()) {
+            items.addAll(allItems);
+        } else {
+            String needle = filterQuery.toLowerCase(Locale.ROOT);
+            for (T item : allItems) {
+                String haystack = searchText(item);
+                if (haystack != null && haystack.toLowerCase(Locale.ROOT).contains(needle)) {
+                    items.add(item);
+                }
+            }
+        }
+        render(identityToRestore);
     }
 
     /**
@@ -197,13 +332,21 @@ public abstract class TablePanel<T> extends Panel {
             heading.setForegroundColor(Palette.STOPPED);
             return;
         }
+        if (filtering || hasFilter()) {
+            String caret = filtering ? "█" : "";
+            heading.setText("  /" + filterQuery + caret
+                    + "  ·  " + items.size() + "/" + allItems.size() + " " + noun()
+                    + (filtering ? "  ·  Esc clear  ·  Enter done" : "  ·  Esc clear  ·  / edit"));
+            heading.setForegroundColor(Palette.ACCENT);
+            return;
+        }
         if (items.isEmpty()) {
             heading.setText("  ·  No " + noun() + " yet — use the toolbar above to create one");
             heading.setForegroundColor(Palette.MUTED);
             return;
         }
         heading.setText("  " + items.size() + " " + noun()
-                + "  ·  ↑↓ move  ·  click a row to select");
+                + "  ·  ↑↓ move  ·  / filter  ·  click a row to select");
         heading.setForegroundColor(Palette.DIM);
     }
 
