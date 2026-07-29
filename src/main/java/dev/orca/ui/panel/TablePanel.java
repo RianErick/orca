@@ -221,6 +221,19 @@ public abstract class TablePanel<T> extends Panel {
         refresh(true);
     }
 
+    /**
+     * Replaces the loaded model without hitting Docker again (e.g. overlaying async stats).
+     */
+    protected void replaceItems(List<T> next) {
+        String previous = selectedIdentity != null ? selectedIdentity : selectedIdentityFromRow();
+        allItems.clear();
+        if (next != null) {
+            allItems.addAll(next);
+        }
+        loadFailed = false;
+        applyFilter(previous);
+    }
+
     private void beginFilter() {
         filtering = true;
         updateHeading();

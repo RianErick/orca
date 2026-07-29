@@ -4,32 +4,34 @@ import com.googlecode.lanterna.TextColor;
 import com.googlecode.lanterna.gui2.Panel;
 import com.googlecode.lanterna.gui2.WindowBasedTextGUI;
 import dev.orca.docker.DockerService;
+import dev.orca.model.ContainerStatsView;
 import dev.orca.model.ContainerView;
+import dev.orca.model.MountView;
 import dev.orca.ui.Badges;
 import dev.orca.ui.Columns;
 import dev.orca.ui.Palette;
 import dev.orca.ui.StatusSink;
 import dev.orca.ui.UiBars;
-import dev.orca.model.MountView;
 import dev.orca.ui.dialog.ConfirmDialog;
 import dev.orca.ui.dialog.CreateContainerDialog;
 import dev.orca.ui.dialog.LogViewerDialog;
 import dev.orca.ui.dialog.TextViewerDialog;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
 
 public class ContainersPanel extends TablePanel<ContainerView> {
 
     private static final Columns COLUMNS = new Columns(
-            new int[]{0, 5, 5, 3, 4},
-            new int[]{7, 14, 16, 12, 14}
+            new int[]{0, 4, 3, 0, 0, 0},
+            new int[]{7, 12, 14, 6, 11, 13}
     );
 
     private final DockerService docker;
 
     public ContainersPanel(DockerService docker, WindowBasedTextGUI gui, StatusSink status) {
-        super(gui, status, COLUMNS, "State", "Name", "Image", "Uptime", "Ports");
+        super(gui, status, COLUMNS, "State", "Name", "Image", "CPU", "MEM", "NET");
         this.docker = docker;
 
         Panel toolbar = UiBars.horizontal(
@@ -50,25 +52,93 @@ public class ContainersPanel extends TablePanel<ContainerView> {
     }
 
     @Override
+    public void refresh(boolean announce) {
+        super.refresh(announce);
+        scheduleStatsRefresh();
+    }
+
+    private void scheduleStatsRefresh() {
+        if (!isActive()) {
+            return;
+        }
+        List<String> runningIds = allItems().stream()
+                .filter(ContainerView::running)
+                .map(ContainerView::id)
+                .toList();
+        if (runningIds.isEmpty()) {
+            return;
+        }
+        docker.refreshStatsAsync(runningIds, this::onStatsUpdated);
+    }
+
+    private void onStatsUpdated() {
+        try {
+            gui.getGUIThread().invokeLater(() -> {
+                if (!isActive()) {
+                    return;
+                }
+                List<ContainerView> next = new ArrayList<>(allItems().size());
+                for (ContainerView container : allItems()) {
+                    if (!container.running()) {
+                        next.add(container.withStats(null));
+                        continue;
+                    }
+                    ContainerStatsView stats = docker.cachedStats(container.id());
+                    next.add(stats != null ? container.withStats(stats) : container);
+                }
+                replaceItems(next);
+                status.setSelection(describeSelection());
+            });
+        } catch (Exception ignored) {
+            // GUI shutting down
+        }
+    }
+
+    @Override
     protected String[] cells(ContainerView container) {
+        ContainerStatsView stats = container.stats();
+        String cpu = "—";
+        String mem = "—";
+        String net = "—";
+        if (container.running() && stats != null) {
+            cpu = stats.cpuLabel();
+            mem = stats.memLabel();
+            net = stats.netLabel();
+        }
         return new String[]{
                 Badges.containerState(container.running(), container.status()),
                 container.name(),
                 container.image(),
-                Badges.containerDetail(container.status()),
-                container.ports()
+                cpu,
+                mem,
+                net
         };
     }
 
     @Override
     protected TextColor color(ContainerView container, int column) {
+        ContainerStatsView stats = container.stats();
         return switch (column) {
             case 0 -> Badges.containerColor(container.running(), container.status());
             case 2 -> Palette.MUTED;
-            case 3 -> Palette.DIM;
-            case 4 -> Palette.DIM;
+            case 3 -> statsColor(container, stats != null ? stats.cpuPercent() / 100.0 : -1);
+            case 4 -> statsColor(container, stats != null ? stats.memRatio() : -1);
+            case 5 -> container.running() && stats != null ? Palette.DIM : Palette.MUTED;
             default -> null;
         };
+    }
+
+    private static TextColor statsColor(ContainerView container, double ratio) {
+        if (!container.running() || ratio < 0) {
+            return Palette.MUTED;
+        }
+        if (ratio >= 0.85) {
+            return Palette.STOPPED;
+        }
+        if (ratio >= 0.60) {
+            return Palette.WARNING;
+        }
+        return Palette.RUNNING;
     }
 
     @Override
@@ -93,10 +163,24 @@ public class ContainersPanel extends TablePanel<ContainerView> {
         if (container == null) {
             return "No container selected";
         }
-        return Badges.containerState(container.running(), container.status()).trim()
-                + "  " + label(container)
-                + "  ·  " + container.image()
-                + (container.ports().isBlank() ? "" : "  ·  " + container.ports());
+        StringBuilder line = new StringBuilder();
+        line.append(Badges.containerState(container.running(), container.status()).trim())
+                .append("  ").append(label(container))
+                .append("  ·  ").append(container.image());
+        String uptime = Badges.containerDetail(container.status());
+        if (!uptime.isBlank()) {
+            line.append("  ·  ").append(uptime);
+        }
+        if (!container.ports().isBlank()) {
+            line.append("  ·  ").append(container.ports());
+        }
+        ContainerStatsView stats = container.stats();
+        if (container.running() && stats != null) {
+            line.append("  ·  CPU ").append(stats.cpuLabel())
+                    .append("  MEM ").append(stats.memLabel())
+                    .append("  NET ").append(stats.netLabel());
+        }
+        return line.toString();
     }
 
     public long runningCount() {

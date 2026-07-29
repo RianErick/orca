@@ -16,36 +16,63 @@ import com.github.dockerjava.api.exception.NotModifiedException;
 import com.github.dockerjava.api.model.Container;
 import com.github.dockerjava.api.model.ContainerMount;
 import com.github.dockerjava.api.model.ContainerPort;
+import com.github.dockerjava.api.model.CpuStatsConfig;
+import com.github.dockerjava.api.model.CpuUsageConfig;
 import com.github.dockerjava.api.model.ExposedPort;
 import com.github.dockerjava.api.model.Frame;
 import com.github.dockerjava.api.model.HostConfig;
 import com.github.dockerjava.api.model.Image;
+import com.github.dockerjava.api.model.MemoryStatsConfig;
 import com.github.dockerjava.api.model.Network;
 import com.github.dockerjava.api.model.Ports;
+import com.github.dockerjava.api.model.PruneResponse;
+import com.github.dockerjava.api.model.PruneType;
 import com.github.dockerjava.api.model.PullResponseItem;
+import com.github.dockerjava.api.model.StatisticNetworksConfig;
+import com.github.dockerjava.api.model.Statistics;
 import com.github.dockerjava.api.command.PullImageResultCallback;
+import dev.orca.model.ContainerStatsView;
 import dev.orca.model.ContainerView;
 import dev.orca.model.ImageView;
 import dev.orca.model.MountView;
 import dev.orca.model.NetworkView;
+import dev.orca.model.PruneResult;
 import dev.orca.model.VolumeView;
 
 import java.io.Closeable;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 public class DockerService implements Closeable {
 
+    private static final int STATS_POOL_SIZE = 4;
+    private static final long STATS_TIMEOUT_MS = 900;
+
     private final DockerClient client;
+    private final ConcurrentHashMap<String, ContainerStatsView> statsCache = new ConcurrentHashMap<>();
+    private final AtomicLong statsEpoch = new AtomicLong();
+    private final ExecutorService statsPool = Executors.newFixedThreadPool(STATS_POOL_SIZE, runnable -> {
+        Thread thread = new Thread(runnable, "orca-stats");
+        thread.setDaemon(true);
+        return thread;
+    });
 
     public DockerService(DockerClient client) {
         this.client = Objects.requireNonNull(client, "client");
@@ -55,25 +82,187 @@ public class DockerService implements Closeable {
         client.pingCmd().exec();
     }
 
+    /**
+     * Fast container list. Applies any cached live stats without blocking on the Docker stats API.
+     */
     public List<ContainerView> listContainers(boolean all) {
         List<Container> containers = client.listContainersCmd().withShowAll(all).exec();
         List<ContainerView> views = new ArrayList<>(containers.size());
+        Set<String> seen = new HashSet<>(containers.size() * 2);
         for (Container container : containers) {
             String name = firstName(container.getNames());
             String ports = formatPorts(container.getPorts());
             String status = container.getStatus() != null ? container.getStatus() : "";
             boolean running = "running".equalsIgnoreCase(container.getState());
+            String id = container.getId();
+            seen.add(id);
+            ContainerStatsView stats = running ? statsCache.get(id) : null;
             views.add(new ContainerView(
-                    container.getId(),
-                    shortId(container.getId()),
+                    id,
+                    shortId(id),
                     name,
                     nullToEmpty(container.getImage()),
                     status,
                     ports,
-                    running
+                    running,
+                    stats
             ));
         }
+        statsCache.keySet().removeIf(id -> !seen.contains(id));
         return views;
+    }
+
+    public ContainerStatsView cachedStats(String containerId) {
+        return containerId == null ? null : statsCache.get(containerId);
+    }
+
+    /**
+     * Fetches live stats in the background. Invokes {@code onProgress} on worker threads
+     * (throttled); the caller should hop to the GUI thread. Never blocks the caller.
+     */
+    public void refreshStatsAsync(List<String> runningIds, Runnable onProgress) {
+        if (runningIds == null || runningIds.isEmpty()) {
+            return;
+        }
+        long epoch = statsEpoch.incrementAndGet();
+        AtomicInteger remaining = new AtomicInteger(runningIds.size());
+        AtomicLong lastNotifyNanos = new AtomicLong(0);
+        for (String id : runningIds) {
+            statsPool.execute(() -> {
+                if (epoch != statsEpoch.get()) {
+                    return;
+                }
+                try {
+                    ContainerStatsView sample = statsOnce(id);
+                    if (sample != null && epoch == statsEpoch.get()) {
+                        statsCache.put(id, sample);
+                    }
+                } finally {
+                    int left = remaining.decrementAndGet();
+                    if (epoch != statsEpoch.get() || onProgress == null) {
+                        return;
+                    }
+                    long now = System.nanoTime();
+                    long prev = lastNotifyNanos.get();
+                    boolean due = left == 0 || now - prev >= 120_000_000L;
+                    if (due && lastNotifyNanos.compareAndSet(prev, now)) {
+                        onProgress.run();
+                    } else if (left == 0) {
+                        onProgress.run();
+                    }
+                }
+            });
+        }
+    }
+
+    /**
+     * Removes stopped containers, dangling images, unused networks and unused volumes.
+     * Returns bytes reclaimed per resource type (Docker does not report deleted IDs).
+     */
+    public PruneResult pruneUnused() {
+        long containers = spaceReclaimed(client.pruneCmd(PruneType.CONTAINERS).exec());
+        long images = spaceReclaimed(client.pruneCmd(PruneType.IMAGES).withDangling(true).exec());
+        long networks = spaceReclaimed(client.pruneCmd(PruneType.NETWORKS).exec());
+        long volumes = spaceReclaimed(client.pruneCmd(PruneType.VOLUMES).exec());
+        return new PruneResult(containers, images, networks, volumes);
+    }
+
+    public ContainerStatsView statsOnce(String containerId) {
+        String id = requireNonBlank(containerId, "Container id is required");
+        AtomicReference<Statistics> sample = new AtomicReference<>();
+        try {
+            client.statsCmd(id)
+                    .withNoStream(true)
+                    .exec(new ResultCallback.Adapter<Statistics>() {
+                        @Override
+                        public void onNext(Statistics statistics) {
+                            if (statistics != null) {
+                                sample.set(statistics);
+                            }
+                        }
+                    })
+                    .awaitCompletion(STATS_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
+        } catch (Exception ignored) {
+            return null;
+        }
+        return toStatsView(sample.get());
+    }
+
+    private static ContainerStatsView toStatsView(Statistics statistics) {
+        if (statistics == null) {
+            return null;
+        }
+        double cpu = cpuPercent(statistics);
+        MemoryStatsConfig memory = statistics.getMemoryStats();
+        long memUsage = memory != null && memory.getUsage() != null ? memory.getUsage() : -1L;
+        long memLimit = memory != null && memory.getLimit() != null ? memory.getLimit() : -1L;
+
+        long rx = 0;
+        long tx = 0;
+        boolean hasNet = false;
+        Map<String, StatisticNetworksConfig> networks = statistics.getNetworks();
+        if (networks == null || networks.isEmpty()) {
+            networks = statistics.getNetwork();
+        }
+        if (networks != null) {
+            for (StatisticNetworksConfig net : networks.values()) {
+                if (net == null) {
+                    continue;
+                }
+                hasNet = true;
+                rx += net.getRxBytes() != null ? net.getRxBytes() : 0L;
+                tx += net.getTxBytes() != null ? net.getTxBytes() : 0L;
+            }
+        }
+        return new ContainerStatsView(
+                cpu,
+                memUsage,
+                memLimit,
+                hasNet ? rx : -1L,
+                hasNet ? tx : -1L
+        );
+    }
+
+    private static double cpuPercent(Statistics statistics) {
+        CpuStatsConfig cpu = statistics.getCpuStats();
+        CpuStatsConfig pre = statistics.getPreCpuStats();
+        if (cpu == null || pre == null) {
+            return -1;
+        }
+        CpuUsageConfig usage = cpu.getCpuUsage();
+        CpuUsageConfig preUsage = pre.getCpuUsage();
+        if (usage == null || preUsage == null
+                || usage.getTotalUsage() == null || preUsage.getTotalUsage() == null
+                || cpu.getSystemCpuUsage() == null || pre.getSystemCpuUsage() == null) {
+            return -1;
+        }
+        long cpuDelta = usage.getTotalUsage() - preUsage.getTotalUsage();
+        long systemDelta = cpu.getSystemCpuUsage() - pre.getSystemCpuUsage();
+        if (cpuDelta <= 0 || systemDelta <= 0) {
+            return 0;
+        }
+        long online = cpu.getOnlineCpus() != null && cpu.getOnlineCpus() > 0
+                ? cpu.getOnlineCpus()
+                : (usage.getPercpuUsage() != null ? usage.getPercpuUsage().size() : 1L);
+        if (online <= 0) {
+            online = 1;
+        }
+        return (cpuDelta / (double) systemDelta) * online * 100.0;
+    }
+
+    private static long spaceReclaimed(PruneResponse response) {
+        if (response == null || response.getSpaceReclaimed() == null) {
+            return 0L;
+        }
+        return Math.max(0L, response.getSpaceReclaimed());
+    }
+
+    /** Human-readable byte size for status messages. */
+    public static String formatBytes(long bytes) {
+        return formatSize(bytes);
     }
 
     public String createAndStart(String name, String image, String portsSpec, String envSpec, String cmdSpec) {
@@ -246,12 +435,19 @@ public class DockerService implements Closeable {
     }
 
     public List<VolumeView> listVolumes() {
+        return listVolumes(true);
+    }
+
+    /**
+     * @param includeUsage when {@code false}, skips scanning container mounts (fast KPI refresh)
+     */
+    public List<VolumeView> listVolumes(boolean includeUsage) {
         ListVolumesResponse response = client.listVolumesCmd().exec();
         List<InspectVolumeResponse> volumes = response.getVolumes();
         if (volumes == null) {
             return List.of();
         }
-        Map<String, List<String>> usageByVolume = volumeUsageIndex();
+        Map<String, List<String>> usageByVolume = includeUsage ? volumeUsageIndex() : Map.of();
         List<VolumeView> views = new ArrayList<>(volumes.size());
         for (InspectVolumeResponse volume : volumes) {
             String name = nullToEmpty(volume.getName());
@@ -466,6 +662,8 @@ public class DockerService implements Closeable {
 
     @Override
     public void close() {
+        statsEpoch.incrementAndGet();
+        statsPool.shutdownNow();
         try {
             client.close();
         } catch (Exception ignored) {
