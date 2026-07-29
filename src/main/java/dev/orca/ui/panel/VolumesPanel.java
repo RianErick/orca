@@ -39,7 +39,8 @@ public class VolumesPanel extends TablePanel<VolumeView> {
 
     @Override
     protected List<VolumeView> load() throws Exception {
-        return docker.listVolumes();
+        // Mount usage scan is expensive — only when this tab is visible.
+        return docker.listVolumes(isActive());
     }
 
     @Override

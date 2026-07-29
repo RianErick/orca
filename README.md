@@ -36,10 +36,12 @@ Mouse support uses modern **SGR mouse tracking** (`CSI ?1006h`). Prefer a real t
 - Browse **containers**, **images**, **networks**, and **volumes** in dedicated views
 - **Filter / search** with `/` (name, image, status…) — Esc clears
 - Create, start, stop, restart, and remove containers
+- Live **CPU / memory / net I/O** stats on running container rows
 - View container logs and mounts in-place
 - Pull and remove images
 - Create and remove networks
 - Create and remove volumes; see which containers mount each volume
+- **Prune** stopped containers, dangling images, unused networks & volumes (with confirmation)
 - Modern dark theme with clear selection feedback
 - Friendly status messages when Docker is unreachable
 
@@ -116,6 +118,7 @@ If your user cannot access the Docker socket, either join the `docker` group or 
 | `1` / `2` / `3` / `4` | Switch to Containers / Images / Networks / Volumes |
 | `/` | Filter / search (name, image, status, …) — like lazygit |
 | `Esc` | Clear the active filter |
+| `P` | Prune unused resources (with confirmation) |
 | `↑` / `↓` | Move the row selection |
 | `Tab` | Move focus between buttons and the table |
 | `r` | Refresh the current tab |
@@ -133,6 +136,8 @@ If your user cannot access the Docker socket, either join the `docker` group or 
 | `l` | View logs |
 | `m` | View mounts |
 | `d` | Delete (force) |
+
+Running containers show live **CPU**, **MEM**, and **NET** columns (refreshed with Auto). Uptime and ports stay in the status line for the selected row.
 
 #### Images
 

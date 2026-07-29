@@ -17,6 +17,8 @@ import com.googlecode.lanterna.gui2.dialogs.MessageDialogButton;
 import com.googlecode.lanterna.input.KeyStroke;
 import com.googlecode.lanterna.input.KeyType;
 import dev.orca.docker.DockerService;
+import dev.orca.model.PruneResult;
+import dev.orca.ui.dialog.ConfirmDialog;
 import dev.orca.ui.panel.ContainersPanel;
 import dev.orca.ui.panel.ImagesPanel;
 import dev.orca.ui.panel.NetworksPanel;
@@ -35,6 +37,8 @@ public class MainWindow extends BasicWindow {
 
     private static final DateTimeFormatter CLOCK = DateTimeFormatter.ofPattern("HH:mm:ss");
     private static final int AUTO_REFRESH_SECONDS = 5;
+    /** How often inactive tabs are refreshed just for header KPIs. */
+    private static final int KPI_REFRESH_SECONDS = 15;
 
     /** Rows used by everything that is not table content. */
     private static final int CHROME_ROWS = 12;
@@ -79,6 +83,7 @@ public class MainWindow extends BasicWindow {
     private int selectedTab;
     private boolean autoRefresh = true;
     private long lastRefreshMillis = System.currentTimeMillis();
+    private long lastKpiRefreshMillis = 0;
     private TerminalSize lastSize;
 
     public MainWindow(WindowBasedTextGUI gui, DockerService docker, boolean mouseEnabled) {
@@ -126,7 +131,8 @@ public class MainWindow extends BasicWindow {
             tabBar.addComponent(tab);
         }
         tabBar.addComponent(UiBars.gap(2));
-        tabBar.addComponent(UiBars.button("Refresh", this::refreshActive));
+        tabBar.addComponent(UiBars.button("Refresh", () -> refreshActive(true)));
+        tabBar.addComponent(UiBars.chip("✂ Prune", this::pruneUnused, Palette.WARNING));
         tabBar.addComponent(autoButton);
         tabBar.addComponent(UiBars.button("Help", this::showHelp));
         tabBar.addComponent(UiBars.chip("× Quit", this::close, Palette.STOPPED));
@@ -209,7 +215,7 @@ public class MainWindow extends BasicWindow {
             );
         }
         relayout();
-        refreshActive();
+        refreshActive(true);
         ticker.scheduleAtFixedRate(this::tick, 1, 1, TimeUnit.SECONDS);
     }
 
@@ -289,10 +295,10 @@ public class MainWindow extends BasicWindow {
 
     private String shortcuts() {
         return switch (selectedTab) {
-            case 0 -> "1-4 views · / filter · c create · s start · x stop · R restart · l logs · m mounts · d delete · q quit";
-            case 1 -> "1-4 views · / filter · p pull · d delete · r refresh · a auto · ? help · q quit";
-            case 2 -> "1-4 views · / filter · c create · d delete · r refresh · a auto · ? help · q quit";
-            default -> "1-4 views · / filter · c create · m mounts · d delete · r refresh · a auto · ? help · q quit";
+            case 0 -> "1-4 · / filter · P prune · c create · s/x start/stop · l logs · m mounts · d delete · q quit";
+            case 1 -> "1-4 · / filter · P prune · p pull · d delete · r refresh · a auto · ? help · q quit";
+            case 2 -> "1-4 · / filter · P prune · c create · d delete · r refresh · a auto · ? help · q quit";
+            default -> "1-4 · / filter · P prune · c create · m mounts · d delete · r refresh · a auto · q quit";
         };
     }
 
@@ -352,7 +358,11 @@ public class MainWindow extends BasicWindow {
                 yield true;
             }
             case 'r' -> {
-                refreshActive();
+                refreshActive(true);
+                yield true;
+            }
+            case 'P' -> {
+                pruneUnused();
                 yield true;
             }
             case 'a' -> {
@@ -382,6 +392,57 @@ public class MainWindow extends BasicWindow {
             }
             default -> activePanel().handleKey(key);
         };
+    }
+
+    private void pruneUnused() {
+        if (!ConfirmDialog.ask(
+                gui,
+                "Prune unused resources",
+                """
+                        Remove stopped containers, dangling images,
+                        unused networks and unused volumes?
+
+                        Running containers and tagged images are kept.""")) {
+            message = "Prune cancelled";
+            paintChrome();
+            activePanel().getTable().takeFocus();
+            return;
+        }
+        try {
+            message = "Pruning unused Docker resources…";
+            paintChrome();
+            PruneResult result = docker.pruneUnused();
+            String summary = "Reclaimed "
+                    + DockerService.formatBytes(result.totalBytes())
+                    + "  ·  ctr "
+                    + DockerService.formatBytes(result.containersBytes())
+                    + " · img "
+                    + DockerService.formatBytes(result.imagesBytes())
+                    + " · net "
+                    + DockerService.formatBytes(result.networksBytes())
+                    + " · vol "
+                    + DockerService.formatBytes(result.volumesBytes());
+            message = result.reclaimedAnything() ? summary : "Prune done — nothing to reclaim";
+            MessageDialog.showMessageDialog(
+                    gui,
+                    "Prune complete",
+                    result.reclaimedAnything()
+                            ? summary.replace("  ·  ", "\n")
+                            : "Nothing to reclaim — Docker is already tidy.",
+                    MessageDialogButton.OK
+            );
+            refreshActive(true);
+        } catch (Exception e) {
+            message = "Prune failed: " + DockerService.friendlyMessage(e);
+            MessageDialog.showMessageDialog(
+                    gui,
+                    "Prune failed",
+                    DockerService.friendlyMessage(e),
+                    MessageDialogButton.OK
+            );
+            paintChrome();
+            activePanel().getTable().takeFocus();
+        }
     }
 
     private void toggleAutoRefresh() {
@@ -415,16 +476,34 @@ public class MainWindow extends BasicWindow {
     }
 
     /**
-     * Refreshes every view so the header counters stay truthful; only the active tab
-     * announces status / selection so inactive reloads cannot clobber the UI.
+     * Refreshes the active tab immediately. Inactive tabs refresh on a slower cadence so
+     * header KPIs stay honest without blocking the UI on every tick.
      */
     private void refreshActive() {
-        for (TablePanel<?> panel : panels) {
-            panel.refresh(panel == activePanel());
+        refreshActive(false);
+    }
+
+    private void refreshActive(boolean forceAll) {
+        TablePanel<?> active = activePanel();
+        active.refresh(true);
+
+        long now = System.currentTimeMillis();
+        boolean refreshOthers = forceAll || now - lastKpiRefreshMillis >= KPI_REFRESH_SECONDS * 1000L;
+        if (refreshOthers) {
+            for (TablePanel<?> panel : panels) {
+                if (panel != active) {
+                    panel.refresh(false);
+                }
+            }
+            lastKpiRefreshMillis = now;
+        } else if (active != containersPanel) {
+            // Running/stopped KPIs should stay relatively fresh even on other tabs.
+            containersPanel.refresh(false);
         }
-        lastRefreshMillis = System.currentTimeMillis();
+
+        lastRefreshMillis = now;
         paintChrome();
-        activePanel().getTable().takeFocus();
+        active.getTable().takeFocus();
         // Deferred: a click on a toolbar button hands focus back to the button once the event
         // finishes, so we reclaim the table on the next GUI tick.
         gui.getGUIThread().invokeLater(() -> activePanel().getTable().takeFocus());
@@ -444,14 +523,18 @@ public class MainWindow extends BasicWindow {
                         Keyboard
                           1 2 3 4  switch views         r   refresh now
                           /        filter by name…      Esc clear filter
-                          ↑ ↓      move the selection   a   pause/resume auto-refresh
-                          Tab      move focus           ?   this help
+                          P        prune unused         a   pause/resume auto-refresh
+                          ↑ ↓      move the selection   ?   this help
                                                         q   quit
 
                         Containers   c create · s start · x stop · R restart · l logs · m mounts · d delete
+                                     live CPU / MEM / NET columns refresh with Auto
                         Images       p pull · d delete
                         Networks     c create · d delete
                         Volumes      c create · m mounts · d delete
+
+                        Prune removes stopped containers, dangling images,
+                        unused networks and unused volumes (with confirmation).
 
                         Badges
                           ● RUN / ● OK   running   ○ EXIT / ○ STOP   stopped
