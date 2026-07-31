@@ -4,6 +4,7 @@ import com.googlecode.lanterna.TextColor;
 import com.googlecode.lanterna.gui2.Panel;
 import com.googlecode.lanterna.gui2.WindowBasedTextGUI;
 import dev.orca.docker.DockerService;
+import dev.orca.model.DependencyGraph;
 import dev.orca.model.VolumeView;
 import dev.orca.ui.Columns;
 import dev.orca.ui.Palette;
@@ -32,6 +33,7 @@ public class VolumesPanel extends TablePanel<VolumeView> {
         Panel toolbar = UiBars.horizontal(
                 UiBars.chip("+ Create", this::createVolume, Palette.ACCENT),
                 UiBars.button("☰ Mounts", this::showMounts),
+                UiBars.button("⬡ Graph", this::showGraph),
                 UiBars.chip("× Delete", this::deleteSelected, Palette.STOPPED)
         );
         assemble(toolbar);
@@ -94,6 +96,7 @@ public class VolumesPanel extends TablePanel<VolumeView> {
         switch (shortcut) {
             case 'c' -> createVolume();
             case 'm' -> showMounts();
+            case 'g' -> showGraph();
             case 'd' -> deleteSelected();
             default -> {
                 return false;
@@ -113,6 +116,28 @@ public class VolumesPanel extends TablePanel<VolumeView> {
             }
             focusTable();
         });
+        focusTable();
+    }
+
+    private void showGraph() {
+        VolumeView volume = selected();
+        if (volume == null) {
+            requireSelection("open the dependency graph");
+            return;
+        }
+        try {
+            status.setStatus("Building dependency graph…");
+            DependencyGraph graph = docker.graphForVolume(volume.name());
+            TextViewerDialog.show(
+                    gui,
+                    "Graph — " + volume.name(),
+                    graph.render(),
+                    graph.metaLine()
+            );
+            status.setStatus("Graph closed");
+        } catch (Exception e) {
+            showError("Graph failed", e);
+        }
         focusTable();
     }
 

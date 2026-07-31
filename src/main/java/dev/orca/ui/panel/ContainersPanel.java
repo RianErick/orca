@@ -6,6 +6,7 @@ import com.googlecode.lanterna.gui2.WindowBasedTextGUI;
 import dev.orca.docker.DockerService;
 import dev.orca.model.ContainerStatsView;
 import dev.orca.model.ContainerView;
+import dev.orca.model.DependencyGraph;
 import dev.orca.model.MountView;
 import dev.orca.ui.Badges;
 import dev.orca.ui.Columns;
@@ -41,6 +42,7 @@ public class ContainersPanel extends TablePanel<ContainerView> {
                 UiBars.button("↻ Restart", () -> runOnSelected("Restarted", docker::restart)),
                 UiBars.button("☰ Logs", this::showLogs),
                 UiBars.button("⧉ Mounts", this::showMounts),
+                UiBars.button("⬡ Graph", this::showGraph),
                 UiBars.chip("× Delete", this::deleteSelected, Palette.STOPPED)
         );
         assemble(toolbar);
@@ -200,6 +202,7 @@ public class ContainersPanel extends TablePanel<ContainerView> {
             case 'R' -> runOnSelected("Restarted", docker::restart);
             case 'l' -> showLogs();
             case 'm' -> showMounts();
+            case 'g' -> showGraph();
             case 'd' -> deleteSelected();
             default -> {
                 return false;
@@ -278,6 +281,28 @@ public class ContainersPanel extends TablePanel<ContainerView> {
             status.setStatus("Mounts closed");
         } catch (Exception e) {
             showError("Mounts failed", e);
+        }
+        focusTable();
+    }
+
+    private void showGraph() {
+        ContainerView container = selected();
+        if (container == null) {
+            requireSelection("open the dependency graph");
+            return;
+        }
+        try {
+            status.setStatus("Building dependency graph…");
+            DependencyGraph graph = docker.graphForContainer(container.id());
+            TextViewerDialog.show(
+                    gui,
+                    "Graph — " + label(container),
+                    graph.render(),
+                    graph.metaLine()
+            );
+            status.setStatus("Graph closed");
+        } catch (Exception e) {
+            showError("Graph failed", e);
         }
         focusTable();
     }

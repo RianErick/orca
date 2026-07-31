@@ -38,6 +38,7 @@ Mouse support uses modern **SGR mouse tracking** (`CSI ?1006h`). Prefer a real t
 - Create, start, stop, restart, and remove containers
 - Live **CPU / memory / net I/O** stats on running container rows
 - View container logs and mounts in-place
+- **Dependency graph** — 1-hop ego map of container ↔ networks ↔ volumes/binds
 - Pull and remove images
 - Create and remove networks
 - Create and remove volumes; see which containers mount each volume
@@ -135,6 +136,7 @@ If your user cannot access the Docker socket, either join the `docker` group or 
 | `R` | Restart |
 | `l` | View logs |
 | `m` | View mounts |
+| `g` | Dependency graph (networks + volumes/binds) |
 | `d` | Delete (force) |
 
 Running containers show live **CPU**, **MEM**, and **NET** columns (refreshed with Auto). Uptime and ports stay in the status line for the selected row.
@@ -151,6 +153,7 @@ Running containers show live **CPU**, **MEM**, and **NET** columns (refreshed wi
 | Key | Action |
 |-----|--------|
 | `c` | Create a network |
+| `g` | Dependency graph (attached containers) |
 | `d` | Delete a network |
 
 #### Volumes
@@ -159,6 +162,7 @@ Running containers show live **CPU**, **MEM**, and **NET** columns (refreshed wi
 |-----|--------|
 | `c` | Create a volume |
 | `m` | Show containers mounting the selected volume |
+| `g` | Dependency graph (mounting containers) |
 | `d` | Delete a volume |
 
 ## Tech stack

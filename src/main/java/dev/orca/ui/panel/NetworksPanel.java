@@ -6,6 +6,7 @@ import com.googlecode.lanterna.gui2.WindowBasedTextGUI;
 import com.googlecode.lanterna.gui2.dialogs.MessageDialog;
 import com.googlecode.lanterna.gui2.dialogs.MessageDialogButton;
 import dev.orca.docker.DockerService;
+import dev.orca.model.DependencyGraph;
 import dev.orca.model.NetworkView;
 import dev.orca.ui.Badges;
 import dev.orca.ui.Columns;
@@ -14,6 +15,7 @@ import dev.orca.ui.StatusSink;
 import dev.orca.ui.UiBars;
 import dev.orca.ui.dialog.ConfirmDialog;
 import dev.orca.ui.dialog.CreateNetworkDialog;
+import dev.orca.ui.dialog.TextViewerDialog;
 
 import java.util.List;
 import java.util.Set;
@@ -35,6 +37,7 @@ public class NetworksPanel extends TablePanel<NetworkView> {
 
         Panel toolbar = UiBars.horizontal(
                 UiBars.chip("+ Create", this::createNetwork, Palette.ACCENT),
+                UiBars.button("⬡ Graph", this::showGraph),
                 UiBars.chip("× Delete", this::deleteSelected, Palette.STOPPED)
         );
         assemble(toolbar);
@@ -104,12 +107,35 @@ public class NetworksPanel extends TablePanel<NetworkView> {
     protected boolean handleShortcut(char shortcut) {
         switch (shortcut) {
             case 'c' -> createNetwork();
+            case 'g' -> showGraph();
             case 'd' -> deleteSelected();
             default -> {
                 return false;
             }
         }
         return true;
+    }
+
+    private void showGraph() {
+        NetworkView network = selected();
+        if (network == null) {
+            requireSelection("open the dependency graph");
+            return;
+        }
+        try {
+            status.setStatus("Building dependency graph…");
+            DependencyGraph graph = docker.graphForNetwork(network.id());
+            TextViewerDialog.show(
+                    gui,
+                    "Graph — " + network.name(),
+                    graph.render(),
+                    graph.metaLine()
+            );
+            status.setStatus("Graph closed");
+        } catch (Exception e) {
+            showError("Graph failed", e);
+        }
+        focusTable();
     }
 
     private void createNetwork() {

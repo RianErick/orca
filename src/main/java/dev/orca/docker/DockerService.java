@@ -15,6 +15,7 @@ import com.github.dockerjava.api.exception.NotFoundException;
 import com.github.dockerjava.api.exception.NotModifiedException;
 import com.github.dockerjava.api.model.Container;
 import com.github.dockerjava.api.model.ContainerMount;
+import com.github.dockerjava.api.model.ContainerNetwork;
 import com.github.dockerjava.api.model.ContainerPort;
 import com.github.dockerjava.api.model.CpuStatsConfig;
 import com.github.dockerjava.api.model.CpuUsageConfig;
@@ -24,6 +25,7 @@ import com.github.dockerjava.api.model.HostConfig;
 import com.github.dockerjava.api.model.Image;
 import com.github.dockerjava.api.model.MemoryStatsConfig;
 import com.github.dockerjava.api.model.Network;
+import com.github.dockerjava.api.model.NetworkSettings;
 import com.github.dockerjava.api.model.Ports;
 import com.github.dockerjava.api.model.PruneResponse;
 import com.github.dockerjava.api.model.PruneType;
@@ -33,6 +35,9 @@ import com.github.dockerjava.api.model.Statistics;
 import com.github.dockerjava.api.command.PullImageResultCallback;
 import dev.orca.model.ContainerStatsView;
 import dev.orca.model.ContainerView;
+import dev.orca.model.DependencyGraph;
+import dev.orca.model.DependencyKind;
+import dev.orca.model.DependencyLink;
 import dev.orca.model.ImageView;
 import dev.orca.model.MountView;
 import dev.orca.model.NetworkView;
@@ -476,6 +481,157 @@ public class DockerService implements Closeable {
 
     public void removeVolume(String name) {
         client.removeVolumeCmd(requireNonBlank(name, "Volume name is required")).exec();
+    }
+
+    /**
+     * Ego-graph for a container: attached networks plus volume/bind mounts (1 hop).
+     */
+    public DependencyGraph graphForContainer(String containerId) {
+        String id = requireNonBlank(containerId, "Container id is required");
+        InspectContainerResponse inspected = client.inspectContainerCmd(id).exec();
+        String name = inspected.getName() != null
+                ? firstName(new String[]{inspected.getName()})
+                : shortId(id);
+        boolean running = inspected.getState() != null && Boolean.TRUE.equals(inspected.getState().getRunning());
+        String image = inspected.getConfig() != null ? nullToEmpty(inspected.getConfig().getImage()) : "";
+        String focusDetail = (running ? "running" : "stopped")
+                + (image.isBlank() ? "" : "  ·  " + image)
+                + "  ·  " + shortId(id);
+
+        List<DependencyLink> links = new ArrayList<>();
+        NetworkSettings networks = inspected.getNetworkSettings();
+        if (networks != null && networks.getNetworks() != null) {
+            for (Map.Entry<String, ContainerNetwork> entry : networks.getNetworks().entrySet()) {
+                String networkName = nullToEmpty(entry.getKey());
+                if (networkName.isBlank()) {
+                    continue;
+                }
+                ContainerNetwork endpoint = entry.getValue();
+                String networkId = endpoint != null ? nullToEmpty(endpoint.getNetworkID()) : "";
+                String detail = formatNetworkEndpoint(endpoint);
+                links.add(new DependencyLink(
+                        DependencyKind.NETWORK,
+                        networkId.isBlank() ? networkName : networkId,
+                        networkName,
+                        detail
+                ));
+            }
+        }
+
+        if (inspected.getMounts() != null) {
+            for (InspectContainerResponse.Mount mount : inspected.getMounts()) {
+                links.add(mountLink(mount));
+            }
+        }
+
+        return new DependencyGraph(DependencyKind.CONTAINER, id, name, focusDetail, links);
+    }
+
+    /**
+     * Ego-graph for a network: containers attached to it (1 hop).
+     */
+    public DependencyGraph graphForNetwork(String networkIdOrName) {
+        String key = requireNonBlank(networkIdOrName, "Network id is required");
+        Network network = client.inspectNetworkCmd().withNetworkId(key).exec();
+        String name = nullToEmpty(network.getName());
+        String id = nullToEmpty(network.getId());
+        String focusDetail = nullToEmpty(network.getDriver())
+                + (network.getScope() == null || network.getScope().isBlank() ? "" : "  ·  " + network.getScope())
+                + "  ·  " + shortId(id);
+
+        List<DependencyLink> links = new ArrayList<>();
+        Map<String, Network.ContainerNetworkConfig> attached = network.getContainers();
+        if (attached != null) {
+            for (Map.Entry<String, Network.ContainerNetworkConfig> entry : attached.entrySet()) {
+                String containerId = nullToEmpty(entry.getKey());
+                Network.ContainerNetworkConfig cfg = entry.getValue();
+                String containerName = cfg != null && cfg.getName() != null && !cfg.getName().isBlank()
+                        ? firstName(new String[]{cfg.getName()})
+                        : shortId(containerId);
+                String ip = cfg != null ? nullToEmpty(cfg.getIpv4Address()) : "";
+                String detail = ip.isBlank() ? "" : "ip " + ip;
+                links.add(new DependencyLink(
+                        DependencyKind.CONTAINER,
+                        containerId,
+                        containerName,
+                        detail
+                ));
+            }
+        }
+
+        return new DependencyGraph(
+                DependencyKind.NETWORK,
+                id.isBlank() ? key : id,
+                name.isBlank() ? key : name,
+                focusDetail,
+                links
+        );
+    }
+
+    /**
+     * Ego-graph for a named volume: containers that mount it (1 hop).
+     */
+    public DependencyGraph graphForVolume(String volumeName) {
+        String name = requireNonBlank(volumeName, "Volume name is required");
+        InspectVolumeResponse volume = client.inspectVolumeCmd(name).exec();
+        String focusDetail = nullToEmpty(volume.getDriver())
+                + (volume.getMountpoint() == null || volume.getMountpoint().isBlank()
+                ? ""
+                : "  ·  " + volume.getMountpoint());
+
+        List<DependencyLink> links = new ArrayList<>();
+        for (MountView mount : listAllMounts()) {
+            if (!name.equals(mount.name())) {
+                continue;
+            }
+            String detail = mount.destination()
+                    + " (" + mount.access() + ")"
+                    + (mount.mode().isBlank() ? "" : "  " + mount.mode());
+            links.add(new DependencyLink(
+                    DependencyKind.CONTAINER,
+                    mount.containerName(),
+                    mount.containerName(),
+                    detail
+            ));
+        }
+
+        return new DependencyGraph(DependencyKind.VOLUME, name, name, focusDetail, links);
+    }
+
+    private static DependencyLink mountLink(InspectContainerResponse.Mount mount) {
+        String destination = mount.getDestination() != null
+                ? nullToEmpty(mount.getDestination().getPath())
+                : "";
+        boolean rw = mount.getRW() == null || Boolean.TRUE.equals(mount.getRW());
+        boolean namedVolume = mount.getName() != null && !mount.getName().isBlank();
+        String label = namedVolume ? mount.getName() : nullToEmpty(mount.getSource());
+        String id = namedVolume ? mount.getName() : nullToEmpty(mount.getSource());
+        String detail = (destination.isBlank() ? "" : "→ " + destination + " ")
+                + "(" + (rw ? "rw" : "ro") + ")"
+                + (mount.getMode() == null || mount.getMode().isBlank() ? "" : "  " + mount.getMode());
+        return new DependencyLink(
+                namedVolume ? DependencyKind.VOLUME : DependencyKind.BIND,
+                id,
+                label,
+                detail.trim()
+        );
+    }
+
+    private static String formatNetworkEndpoint(ContainerNetwork endpoint) {
+        if (endpoint == null) {
+            return "";
+        }
+        List<String> parts = new ArrayList<>();
+        String ip = nullToEmpty(endpoint.getIpAddress());
+        if (!ip.isBlank()) {
+            Integer prefix = endpoint.getIpPrefixLen();
+            parts.add("ip " + ip + (prefix != null && prefix > 0 ? "/" + prefix : ""));
+        }
+        String mac = nullToEmpty(endpoint.getMacAddress());
+        if (!mac.isBlank()) {
+            parts.add("mac " + mac);
+        }
+        return String.join("  ·  ", parts);
     }
 
     /**

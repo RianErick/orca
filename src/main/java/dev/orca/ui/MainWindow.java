@@ -295,10 +295,10 @@ public class MainWindow extends BasicWindow {
 
     private String shortcuts() {
         return switch (selectedTab) {
-            case 0 -> "1-4 · / filter · P prune · c create · s/x start/stop · l logs · m mounts · d delete · q quit";
+            case 0 -> "1-4 · / filter · P prune · c create · s/x start/stop · l logs · m mounts · g graph · d delete · q quit";
             case 1 -> "1-4 · / filter · P prune · p pull · d delete · r refresh · a auto · ? help · q quit";
-            case 2 -> "1-4 · / filter · P prune · c create · d delete · r refresh · a auto · ? help · q quit";
-            default -> "1-4 · / filter · P prune · c create · m mounts · d delete · r refresh · a auto · q quit";
+            case 2 -> "1-4 · / filter · P prune · c create · g graph · d delete · r refresh · a auto · ? help · q quit";
+            default -> "1-4 · / filter · P prune · c create · m mounts · g graph · d delete · r refresh · a auto · q quit";
         };
     }
 
@@ -527,11 +527,13 @@ public class MainWindow extends BasicWindow {
                           ↑ ↓      move the selection   ?   this help
                                                         q   quit
 
-                        Containers   c create · s start · x stop · R restart · l logs · m mounts · d delete
+                        Containers   c create · s start · x stop · R restart · l logs · m mounts · g graph · d delete
                                      live CPU / MEM / NET columns refresh with Auto
                         Images       p pull · d delete
-                        Networks     c create · d delete
-                        Volumes      c create · m mounts · d delete
+                        Networks     c create · g graph · d delete
+                        Volumes      c create · m mounts · g graph · d delete
+
+                        Graph shows a 1-hop ego map: container ↔ networks ↔ volumes/binds.
 
                         Prune removes stopped containers, dangling images,
                         unused networks and unused volumes (with confirmation).
