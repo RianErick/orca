@@ -17,6 +17,7 @@ import com.googlecode.lanterna.gui2.dialogs.MessageDialogButton;
 import com.googlecode.lanterna.input.KeyStroke;
 import com.googlecode.lanterna.input.KeyType;
 import dev.orca.docker.DockerService;
+import dev.orca.model.PrunePreview;
 import dev.orca.model.PruneResult;
 import dev.orca.ui.dialog.ConfirmDialog;
 import dev.orca.ui.panel.ContainersPanel;
@@ -132,7 +133,7 @@ public class MainWindow extends BasicWindow {
         }
         tabBar.addComponent(UiBars.gap(2));
         tabBar.addComponent(UiBars.button("Refresh", () -> refreshActive(true)));
-        tabBar.addComponent(UiBars.chip("✂ Prune", this::pruneUnused, Palette.WARNING));
+        tabBar.addComponent(UiBars.chip("✂ Prune all…", this::pruneUnused, Palette.WARNING));
         tabBar.addComponent(autoButton);
         tabBar.addComponent(UiBars.button("Help", this::showHelp));
         tabBar.addComponent(UiBars.chip("× Quit", this::close, Palette.STOPPED));
@@ -295,10 +296,10 @@ public class MainWindow extends BasicWindow {
 
     private String shortcuts() {
         return switch (selectedTab) {
-            case 0 -> "1-4 · / filter · P prune · c create · s/x start/stop · l logs · m mounts · g graph · d delete · q quit";
-            case 1 -> "1-4 · / filter · P prune · p pull · d delete · r refresh · a auto · ? help · q quit";
-            case 2 -> "1-4 · / filter · P prune · c create · g graph · d delete · r refresh · a auto · ? help · q quit";
-            default -> "1-4 · / filter · P prune · c create · m mounts · g graph · d delete · r refresh · a auto · q quit";
+            case 0 -> "1-4 · / filter · P prune-all · c create · s/x start/stop · l logs · m mounts · g graph · d delete · q quit";
+            case 1 -> "1-4 · / filter · P prune-all · p pull · c/R run · d delete · r refresh · a auto · ? help · q quit";
+            case 2 -> "1-4 · / filter · P prune-all · c create · g graph · d delete · r refresh · a auto · ? help · q quit";
+            default -> "1-4 · / filter · P prune-all · c create · m mounts · g graph · d delete · r refresh · a auto · q quit";
         };
     }
 
@@ -395,21 +396,53 @@ public class MainWindow extends BasicWindow {
     }
 
     private void pruneUnused() {
-        if (!ConfirmDialog.ask(
-                gui,
-                "Prune unused resources",
-                """
-                        Remove stopped containers, dangling images,
-                        unused networks and unused volumes?
+        PrunePreview preview;
+        try {
+            message = "Scanning what prune would remove…";
+            paintChrome();
+            preview = docker.previewPrune();
+        } catch (Exception e) {
+            message = "Prune preview failed: " + DockerService.friendlyMessage(e);
+            MessageDialog.showMessageDialog(
+                    gui,
+                    "Prune preview failed",
+                    DockerService.friendlyMessage(e),
+                    MessageDialogButton.OK
+            );
+            paintChrome();
+            activePanel().getTable().takeFocus();
+            return;
+        }
 
-                        Running containers and tagged images are kept.""")) {
-            message = "Prune cancelled";
+        if (!preview.anythingToPrune()) {
+            message = "Nothing unused to prune";
+            MessageDialog.showMessageDialog(
+                    gui,
+                    "Prune unused — nothing to do",
+                    """
+                            No stopped containers, dangling images,
+                            unused networks or unused volumes found.
+
+                            Prune is host-wide and does not delete the
+                            selected row — use Delete (d) for that.""",
+                    MessageDialogButton.OK
+            );
+            paintChrome();
+            activePanel().getTable().takeFocus();
+            return;
+        }
+
+        if (!ConfirmDialog.askDangerous(
+                gui,
+                "Prune ALL unused on this host?",
+                preview.confirmMessage())) {
+            message = "Prune cancelled — nothing deleted";
             paintChrome();
             activePanel().getTable().takeFocus();
             return;
         }
         try {
-            message = "Pruning unused Docker resources…";
+            message = "Pruning ALL unused Docker resources on this host…";
             paintChrome();
             PruneResult result = docker.pruneUnused();
             String summary = "Reclaimed "
@@ -427,7 +460,7 @@ public class MainWindow extends BasicWindow {
                     gui,
                     "Prune complete",
                     result.reclaimedAnything()
-                            ? summary.replace("  ·  ", "\n")
+                            ? "Host-wide prune finished.\n\n" + summary.replace("  ·  ", "\n")
                             : "Nothing to reclaim — Docker is already tidy.",
                     MessageDialogButton.OK
             );
@@ -523,20 +556,22 @@ public class MainWindow extends BasicWindow {
                         Keyboard
                           1 2 3 4  switch views         r   refresh now
                           /        filter by name…      Esc clear filter
-                          P        prune unused         a   pause/resume auto-refresh
+                          P        prune ALL unused     a   pause/resume auto-refresh
                           ↑ ↓      move the selection   ?   this help
                                                         q   quit
 
                         Containers   c create · s start · x stop · R restart · l logs · m mounts · g graph · d delete
                                      live CPU / MEM / NET columns refresh with Auto
-                        Images       p pull · d delete
+                        Images       p pull · c/R run (create from image) · d delete
                         Networks     c create · g graph · d delete
                         Volumes      c create · m mounts · g graph · d delete
 
                         Graph shows a 1-hop ego map: container ↔ networks ↔ volumes/binds.
 
-                        Prune removes stopped containers, dangling images,
-                        unused networks and unused volumes (with confirmation).
+                        Prune (P / Prune all…) is HOST-WIDE — every stopped container,
+                        dangling image, unused network and unused volume. It is NOT a
+                        row delete. Preview lists names first; default answer is No.
+                        To remove only the selected row, use Delete (d).
 
                         Badges
                           ● RUN / ● OK   running   ○ EXIT / ○ STOP   stopped

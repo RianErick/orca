@@ -313,7 +313,11 @@ public class ContainersPanel extends TablePanel<ContainerView> {
             requireSelection("delete a container");
             return;
         }
-        if (!ConfirmDialog.ask(gui, "Delete container", "Force remove container '" + label(container) + "'?")) {
+        if (!ConfirmDialog.ask(
+                gui,
+                "Delete selected container",
+                "Force remove only '" + label(container) + "'?\n\n"
+                        + "This deletes the selected row — not a host-wide prune.")) {
             status.setStatus("Delete cancelled");
             focusTable();
             return;

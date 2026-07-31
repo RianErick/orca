@@ -11,6 +11,7 @@ import dev.orca.ui.Palette;
 import dev.orca.ui.StatusSink;
 import dev.orca.ui.UiBars;
 import dev.orca.ui.dialog.ConfirmDialog;
+import dev.orca.ui.dialog.CreateContainerDialog;
 import dev.orca.ui.dialog.PullImageDialog;
 
 import java.util.List;
@@ -33,6 +34,7 @@ public class ImagesPanel extends TablePanel<ImageView> {
 
         Panel toolbar = UiBars.horizontal(
                 UiBars.chip("↓ Pull", this::pullImage, Palette.ACCENT),
+                UiBars.chip("▶ Run", this::runSelected, Palette.RUNNING),
                 UiBars.chip("× Delete", this::deleteSelected, Palette.STOPPED)
         );
         assemble(toolbar);
@@ -101,12 +103,55 @@ public class ImagesPanel extends TablePanel<ImageView> {
     protected boolean handleShortcut(char shortcut) {
         switch (shortcut) {
             case 'p' -> pullImage();
+            case 'c', 'R' -> runSelected();
             case 'd' -> deleteSelected();
             default -> {
                 return false;
             }
         }
         return true;
+    }
+
+    private void runSelected() {
+        ImageView image = selected();
+        if (image == null) {
+            requireSelection("run an image");
+            return;
+        }
+        String imageRef = runImageRef(image);
+        if (imageRef.isBlank()) {
+            status.setStatus("Cannot run this image — missing id/tag");
+            focusTable();
+            return;
+        }
+        CreateContainerDialog.show(gui, imageRef).ifPresent(result -> {
+            try {
+                status.setStatus("Creating container from " + result.image() + "…");
+                String id = docker.createAndStart(
+                        result.name(),
+                        result.image(),
+                        result.ports(),
+                        result.env(),
+                        result.command()
+                );
+                status.setStatus("Started " + id.substring(0, Math.min(12, id.length()))
+                        + " from " + imageRef);
+                refresh();
+            } catch (Exception e) {
+                showError("Run image failed", e);
+            }
+            focusTable();
+        });
+        focusTable();
+    }
+
+    private static String runImageRef(ImageView image) {
+        String tag = image.repositoryTag();
+        if (tag != null && !tag.isBlank() && !UNTAGGED.equals(tag)) {
+            return tag;
+        }
+        // Untagged / dangling — Docker accepts the image id.
+        return image.id() != null ? image.id() : "";
     }
 
     private void pullImage() {

@@ -19,14 +19,18 @@ public final class CreateContainerDialog extends DialogWindow {
 
     private Result result;
 
-    private CreateContainerDialog() {
-        super("Create container");
+    private CreateContainerDialog(String prefilledImage) {
+        super(prefilledImage != null && !prefilledImage.isBlank() ? "Run image" : "Create container");
 
         TextBox nameBox = new TextBox(new TerminalSize(40, 1));
         TextBox imageBox = new TextBox(new TerminalSize(40, 1));
         TextBox portsBox = new TextBox(new TerminalSize(40, 1));
         TextBox envBox = new TextBox(new TerminalSize(40, 1));
         TextBox cmdBox = new TextBox(new TerminalSize(40, 1));
+
+        if (prefilledImage != null && !prefilledImage.isBlank()) {
+            imageBox.setText(prefilledImage.trim());
+        }
 
         Panel form = new Panel(new GridLayout(2));
         form.addComponent(new Label("Name"));
@@ -42,7 +46,8 @@ public final class CreateContainerDialog extends DialogWindow {
 
         form.addComponent(new EmptySpace(TerminalSize.ONE));
         Panel buttons = new Panel(new GridLayout(2).setHorizontalSpacing(2));
-        buttons.addComponent(new Button("Create", () -> {
+        String confirmLabel = prefilledImage != null && !prefilledImage.isBlank() ? "Run" : "Create";
+        buttons.addComponent(new Button(confirmLabel, () -> {
             result = new Result(
                     nameBox.getText(),
                     imageBox.getText(),
@@ -62,7 +67,12 @@ public final class CreateContainerDialog extends DialogWindow {
     }
 
     public static Optional<Result> show(WindowBasedTextGUI gui) {
-        CreateContainerDialog dialog = new CreateContainerDialog();
+        return show(gui, null);
+    }
+
+    /** Prefills Image when running from the Images tab. */
+    public static Optional<Result> show(WindowBasedTextGUI gui, String prefilledImage) {
+        CreateContainerDialog dialog = new CreateContainerDialog(prefilledImage);
         dialog.showDialog(gui);
         return Optional.ofNullable(dialog.result);
     }

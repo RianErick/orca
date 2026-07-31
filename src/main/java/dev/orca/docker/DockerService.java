@@ -41,6 +41,7 @@ import dev.orca.model.DependencyLink;
 import dev.orca.model.ImageView;
 import dev.orca.model.MountView;
 import dev.orca.model.NetworkView;
+import dev.orca.model.PrunePreview;
 import dev.orca.model.PruneResult;
 import dev.orca.model.VolumeView;
 
@@ -160,9 +161,61 @@ public class DockerService implements Closeable {
         }
     }
 
+    private static final Set<String> BUILT_IN_NETWORKS = Set.of("bridge", "host", "none");
+
+    /**
+     * Dry-run style preview of what {@link #pruneUnused()} would remove on this host.
+     * Used so the UI can warn clearly that prune is global — not limited to the selected row.
+     */
+    public PrunePreview previewPrune() {
+        List<String> stopped = new ArrayList<>();
+        for (Container container : client.listContainersCmd().withShowAll(true).exec()) {
+            if ("running".equalsIgnoreCase(container.getState())) {
+                continue;
+            }
+            String name = firstName(container.getNames());
+            if (name.isBlank()) {
+                name = shortId(container.getId());
+            }
+            stopped.add(name);
+        }
+        stopped.sort(String.CASE_INSENSITIVE_ORDER);
+
+        int danglingImages = client.listImagesCmd().withDanglingFilter(true).exec().size();
+
+        int unusedNetworks = 0;
+        for (Network network : client.listNetworksCmd().exec()) {
+            String name = nullToEmpty(network.getName());
+            if (BUILT_IN_NETWORKS.contains(name)) {
+                continue;
+            }
+            try {
+                Network inspected = client.inspectNetworkCmd()
+                        .withNetworkId(network.getId() != null ? network.getId() : name)
+                        .exec();
+                Map<String, Network.ContainerNetworkConfig> attached = inspected.getContainers();
+                if (attached == null || attached.isEmpty()) {
+                    unusedNetworks++;
+                }
+            } catch (Exception ignored) {
+                // Skip networks we cannot inspect; better under-count than block prune preview.
+            }
+        }
+
+        int unusedVolumes = 0;
+        for (VolumeView volume : listVolumes(true)) {
+            if (volume.useCount() == 0) {
+                unusedVolumes++;
+            }
+        }
+
+        return PrunePreview.of(stopped, danglingImages, unusedNetworks, unusedVolumes);
+    }
+
     /**
      * Removes stopped containers, dangling images, unused networks and unused volumes.
-     * Returns bytes reclaimed per resource type (Docker does not report deleted IDs).
+     * Host-wide — not limited to any UI selection. Returns bytes reclaimed per resource type
+     * (Docker does not report deleted IDs).
      */
     public PruneResult pruneUnused() {
         long containers = spaceReclaimed(client.pruneCmd(PruneType.CONTAINERS).exec());

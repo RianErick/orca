@@ -39,10 +39,10 @@ Mouse support uses modern **SGR mouse tracking** (`CSI ?1006h`). Prefer a real t
 - Live **CPU / memory / net I/O** stats on running container rows
 - View container logs and mounts in-place
 - **Dependency graph** — 1-hop ego map of container ↔ networks ↔ volumes/binds
-- Pull and remove images
+- Pull, **run** (create+start), and remove images
 - Create and remove networks
 - Create and remove volumes; see which containers mount each volume
-- **Prune** stopped containers, dangling images, unused networks & volumes (with confirmation)
+- **Prune all…** — host-wide cleanup of stopped containers, dangling images, unused networks & volumes (preview + confirmation; **not** a row delete)
 - Modern dark theme with clear selection feedback
 - Friendly status messages when Docker is unreachable
 
@@ -119,7 +119,7 @@ If your user cannot access the Docker socket, either join the `docker` group or 
 | `1` / `2` / `3` / `4` | Switch to Containers / Images / Networks / Volumes |
 | `/` | Filter / search (name, image, status, …) — like lazygit |
 | `Esc` | Clear the active filter |
-| `P` | Prune unused resources (with confirmation) |
+| `P` | Prune **all** unused resources on the host (preview + confirm; not the selected row) |
 | `↑` / `↓` | Move the row selection |
 | `Tab` | Move focus between buttons and the table |
 | `r` | Refresh the current tab |
@@ -146,6 +146,7 @@ Running containers show live **CPU**, **MEM**, and **NET** columns (refreshed wi
 | Key | Action |
 |-----|--------|
 | `p` | Pull an image |
+| `c` / `R` | Run — create and start a container from the selected image |
 | `d` | Delete (force) |
 
 #### Networks
